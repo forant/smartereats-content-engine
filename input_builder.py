@@ -413,44 +413,9 @@ def _render_result(r: dict, side: str, slot_key: str) -> None:
                 st.rerun()
 
 
-# --- UI --------------------------------------------------------------------
+# --- Manual Search Mode (existing) -----------------------------------------
 
-st.set_page_config(page_title="SmarterEats Input Builder", layout="wide")
-st.title("SmarterEats Input Builder")
-st.caption(f"DB: `{_db_path()}` · CSV: `{INPUT_CSV}`")
-
-with st.sidebar:
-    st.markdown("### Search settings")
-    fetch_meta = st.checkbox(
-        "Fetch images + last-updated from OFF",
-        value=True,
-        help="Adds 1-3s on first search per query (parallel + cached). Disable for offline / fast.",
-    )
-    result_limit = st.slider("Max results", 5, 20, 10)
-
-conn = _connect()
-if conn is None:
-    st.error(
-        f"OFF database not found at `{_db_path()}`. "
-        "Set FOOD_DB_PATH or place the file at `./off_products.db`."
-    )
-    st.stop()
-
-# Top settings.
-c1, c2, c3 = st.columns(3)
-with c1:
-    fmt = st.selectbox("Format", FORMATS, index=0)
-with c2:
-    framing = st.selectbox("Framing type", FRAMINGS, index=0)
-with c3:
-    purpose = st.selectbox("Purpose", PURPOSES, index=0)
-
-needs_food_b = fmt in ("comparison", "swap")
-
-st.divider()
-
-
-def _render_picker(side: str, label: str) -> Optional[dict]:
+def _render_picker(conn, side: str, label: str, *, fetch_meta: bool, result_limit: int) -> Optional[dict]:
     """Render search input + result cards for one side. Returns the selected
     dict (also kept in session_state)."""
     st.subheader(label)
@@ -505,28 +470,45 @@ def _render_picker(side: str, label: str) -> Optional[dict]:
     return st.session_state.get(selected_key)
 
 
-food_a = _render_picker("a", "Food A")
+def render_manual_mode(conn, *, fetch_meta: bool, result_limit: int) -> None:
+    # Top settings.
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        fmt = st.selectbox("Format", FORMATS, index=0)
+    with c2:
+        framing = st.selectbox("Framing type", FRAMINGS, index=0)
+    with c3:
+        purpose = st.selectbox("Purpose", PURPOSES, index=0)
 
-food_b = None
-if needs_food_b:
+    needs_food_b = fmt in ("comparison", "swap")
+
     st.divider()
-    food_b = _render_picker("b", "Food B")
-else:
-    st.caption("Food B is not needed for the `exposure` format.")
-    st.session_state.pop("selected_b", None)
 
-st.divider()
+    food_a = _render_picker(conn, "a", "Food A",
+                            fetch_meta=fetch_meta, result_limit=result_limit)
 
-# Preview / edit.
-st.subheader("Card Preview Data")
-ready = (food_a is not None) and ((not needs_food_b) or (food_b is not None))
+    food_b = None
+    if needs_food_b:
+        st.divider()
+        food_b = _render_picker(conn, "b", "Food B",
+                                fetch_meta=fetch_meta, result_limit=result_limit)
+    else:
+        st.caption("Food B is not needed for the `exposure` format.")
+        st.session_state.pop("selected_b", None)
 
-if not ready:
-    if food_a is None:
-        st.info("Search and pick a Food A above.")
-    elif needs_food_b:
-        st.info("Search and pick a Food B above.")
-else:
+    st.divider()
+
+    # Preview / edit.
+    st.subheader("Card Preview Data")
+    ready = (food_a is not None) and ((not needs_food_b) or (food_b is not None))
+
+    if not ready:
+        if food_a is None:
+            st.info("Search and pick a Food A above.")
+        elif needs_food_b:
+            st.info("Search and pick a Food B above.")
+        return
+
     cols = st.columns(2 if needs_food_b else 1)
     with cols[0]:
         st.markdown("**Food A — DB record**")
@@ -607,9 +589,324 @@ else:
             st.session_state.pop(k, None)
         st.rerun()
 
+
+# --- Cleaner Mode ----------------------------------------------------------
+
+DISCOVERY_CSV = "output/discovery_results.csv"
+
+
+def _load_discoveries() -> pd.DataFrame:
+    p = Path(DISCOVERY_CSV)
+    if not p.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(p, dtype=str, keep_default_na=False)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _update_discovery_status(discovery_id: str, status: str) -> bool:
+    """Mark one row's status (e.g. 'approved' / 'skipped'). Returns True if
+    the row was found and updated."""
+    p = Path(DISCOVERY_CSV)
+    if not p.exists():
+        return False
+    df = pd.read_csv(p, dtype=str, keep_default_na=False)
+    if "discovery_id" not in df.columns or "status" not in df.columns:
+        return False
+    mask = df["discovery_id"] == str(discovery_id)
+    if not mask.any():
+        return False
+    df.loc[mask, "status"] = status
+    df.to_csv(p, index=False)
+    return True
+
+
+def render_cleaner_mode() -> None:
+    df = _load_discoveries()
+    if df.empty:
+        st.warning(
+            f"No discoveries found at `{DISCOVERY_CSV}`. "
+            "Run `python discover_candidates.py` first."
+        )
+        return
+
+    total = len(df)
+    counts = df["status"].value_counts().to_dict() if "status" in df.columns else {}
+    pending_n = counts.get("pending", 0)
+    approved_n = counts.get("approved", 0)
+    skipped_n = counts.get("skipped", 0)
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Total", total)
+    sc2.metric("Pending", pending_n)
+    sc3.metric("Approved", approved_n)
+    sc4.metric("Skipped", skipped_n)
+
+    pending = df[df.get("status", "") == "pending"].copy()
+    if pending.empty:
+        st.success("Nothing left to review — all rows are approved or skipped.")
+        st.dataframe(df, use_container_width=True)
+        return
+
+    # Sort by postability_score desc so the best ideas surface first.
+    if "postability_score" in pending.columns:
+        pending["_post"] = pd.to_numeric(pending["postability_score"], errors="coerce").fillna(0)
+        pending = pending.sort_values("_post", ascending=False).reset_index(drop=True)
+    else:
+        pending = pending.reset_index(drop=True)
+
+    idx = int(st.session_state.get("cleaner_idx", 0))
+    idx = max(0, min(idx, len(pending) - 1))
+    st.session_state["cleaner_idx"] = idx
+
+    nav1, nav2, nav3 = st.columns([1, 2, 1])
+    with nav1:
+        if st.button("◀ Previous", disabled=(idx == 0), use_container_width=True):
+            st.session_state["cleaner_idx"] = max(0, idx - 1)
+            st.rerun()
+    with nav2:
+        st.markdown(
+            f"<div style='text-align:center;'>Pending {idx + 1} of {len(pending)}</div>",
+            unsafe_allow_html=True,
+        )
+    with nav3:
+        if st.button("Next ▶", disabled=(idx >= len(pending) - 1), use_container_width=True):
+            st.session_state["cleaner_idx"] = min(len(pending) - 1, idx + 1)
+            st.rerun()
+
+    row = pending.iloc[idx]
+    discovery_id = str(row.get("discovery_id", "")).strip()
+    row_format = (row.get("format") or "comparison").strip().lower() or "comparison"
+
+    # Format-specific labels for the read-only context block.
+    if row_format == "exposure":
+        cand_label = "Candidate (food_a) — single-item exposure"
+        ref_label = ""
+    elif row_format == "swap":
+        cand_label = "Candidate (food_a) — swap OUT"
+        ref_label = "Alternative (food_b) — PICK THIS"
+    else:
+        cand_label = "Candidate (food_a)"
+        ref_label = "Reference (food_b)"
+
+    st.divider()
+
+    # Discovery context (read-only).
+    with st.container(border=True):
+        st.markdown(
+            f"**discovery_id:** `{discovery_id}` · "
+            f"**format:** `{row_format}` · "
+            f"**postability:** `{row.get('postability_score', '?')}/10` · "
+            f"**diff:** `{row.get('score_diff', '?') or '—'}` · "
+            f"**angle:** _{row.get('content_angle', '')}_"
+        )
+        # Two-column layout when there's a reference; full-width for exposure.
+        if row_format == "exposure":
+            ccol = st.container()
+            rcol = None
+        else:
+            ccol, rcol = st.columns(2)
+        with ccol:
+            st.markdown(f"**{cand_label}**")
+            st.write(f"{row.get('candidate_name_raw', '') or '—'}")
+            st.caption(
+                f"{row.get('candidate_brand', '') or '—'} · "
+                f"`{row.get('candidate_barcode', '')}` · "
+                f"score `{row.get('candidate_score', '?')}/10`"
+            )
+            interp = (row.get("candidate_interpretation") or "").strip()
+            if interp:
+                st.caption(interp)
+            hurts = (row.get("candidate_what_hurts") or "").strip()
+            if hurts:
+                st.caption(f"⚠️ Hurts: {hurts}")
+            helps = (row.get("candidate_what_helps") or "").strip()
+            if helps:
+                st.caption(f"✓ Helps: {helps}")
+        if rcol is not None:
+            with rcol:
+                st.markdown(f"**{ref_label}**")
+                st.write(f"{row.get('reference_name_raw', '') or '—'}")
+                st.caption(
+                    f"{row.get('reference_brand', '') or '—'} · "
+                    f"`{row.get('reference_barcode', '')}` · "
+                    f"score `{row.get('reference_score', '?')}/10`"
+                )
+                ref_interp = (row.get("reference_interpretation") or "").strip()
+                if ref_interp:
+                    st.caption(ref_interp)
+
+    # Editable form.
+    st.divider()
+    st.subheader("Edit (becomes the input.csv row)")
+
+    e1, e2, e3 = st.columns(3)
+    with e1:
+        fmt_options = FORMATS + (
+            [] if (row.get("format") or "comparison") in FORMATS else [row.get("format")]
+        )
+        fmt = st.selectbox(
+            "Format", fmt_options,
+            index=fmt_options.index(row.get("format") or "comparison"),
+            key=f"clean_fmt_{discovery_id}",
+        )
+    with e2:
+        framing_options = FRAMINGS + (
+            [] if (row.get("framing_type") or "default") in FRAMINGS else [row.get("framing_type")]
+        )
+        framing = st.selectbox(
+            "Framing type", framing_options,
+            index=framing_options.index(row.get("framing_type") or "default"),
+            key=f"clean_framing_{discovery_id}",
+        )
+    with e3:
+        purpose_options = PURPOSES + (
+            [] if (row.get("purpose") or "snack") in PURPOSES else [row.get("purpose")]
+        )
+        purpose = st.selectbox(
+            "Purpose", purpose_options,
+            index=purpose_options.index(row.get("purpose") or "snack"),
+            key=f"clean_purpose_{discovery_id}",
+        )
+
+    fcols = st.columns(2)
+    with fcols[0]:
+        st.markdown("**Food A — candidate**")
+        a_name = st.text_input(
+            "food_a_name",
+            value=row.get("candidate_name_raw") or "",
+            key=f"clean_a_name_{discovery_id}",
+        )
+        a_display = st.text_input(
+            "food_a_display_name",
+            value=row.get("candidate_display_name_suggested") or row.get("candidate_name_raw") or "",
+            key=f"clean_a_display_{discovery_id}",
+        )
+        a_label = st.text_input(
+            "food_a_label",
+            value=row.get("candidate_label_suggested") or "",
+            placeholder="e.g. 'kids yogurt'",
+            key=f"clean_a_label_{discovery_id}",
+        )
+        a_barcode = st.text_input(
+            "food_a_barcode",
+            value=row.get("candidate_barcode") or "",
+            key=f"clean_a_code_{discovery_id}",
+        )
+    with fcols[1]:
+        st.markdown("**Food B — reference**")
+        b_name = st.text_input(
+            "food_b_name",
+            value=row.get("reference_name_raw") or "",
+            key=f"clean_b_name_{discovery_id}",
+        )
+        b_display = st.text_input(
+            "food_b_display_name",
+            value=row.get("reference_display_name_suggested") or row.get("reference_name_raw") or "",
+            key=f"clean_b_display_{discovery_id}",
+        )
+        b_label = st.text_input(
+            "food_b_label",
+            value=row.get("reference_label_suggested") or "",
+            placeholder="e.g. 'candy bar'",
+            key=f"clean_b_label_{discovery_id}",
+        )
+        b_barcode = st.text_input(
+            "food_b_barcode",
+            value=row.get("reference_barcode") or "",
+            key=f"clean_b_code_{discovery_id}",
+        )
+
+    st.divider()
+
+    # Action buttons.
+    bcol1, bcol2, bcol3 = st.columns([2, 1, 1])
+    with bcol1:
+        if st.button("✓ Approve & append to input.csv",
+                     type="primary", key=f"approve_{discovery_id}",
+                     use_container_width=True):
+            df_in = load_csv()
+            new_pair_id = next_pair_id(df_in)
+            new_row = {
+                "pair_id": new_pair_id,
+                "format": fmt,
+                "food_a_name": (a_name or "").strip(),
+                "food_a_display_name": (a_display or "").strip(),
+                "food_a_label": (a_label or "").strip(),
+                "food_a_barcode": (a_barcode or "").strip(),
+                "food_b_name": (b_name or "").strip(),
+                "food_b_display_name": (b_display or "").strip(),
+                "food_b_label": (b_label or "").strip(),
+                "food_b_barcode": (b_barcode or "").strip(),
+                "purpose": purpose,
+                "framing_type": framing,
+            }
+            append_row(new_row)
+            _update_discovery_status(discovery_id, "approved")
+            st.success(
+                f"Approved discovery `{discovery_id}` → input.csv pair_id={new_pair_id}"
+            )
+            # Don't bump idx — pending list shrinks, so the next pending row
+            # naturally takes this slot. Clamp on the next render.
+            st.rerun()
+    with bcol2:
+        if st.button("Skip", key=f"skip_{discovery_id}", use_container_width=True):
+            _update_discovery_status(discovery_id, "skipped")
+            st.info(f"Skipped discovery `{discovery_id}`.")
+            st.rerun()
+    with bcol3:
+        if st.button("Next pending ▶", key=f"next_{discovery_id}",
+                     use_container_width=True, disabled=(idx >= len(pending) - 1)):
+            st.session_state["cleaner_idx"] = min(len(pending) - 1, idx + 1)
+            st.rerun()
+
+
+# --- Page ------------------------------------------------------------------
+
+st.set_page_config(page_title="SmarterEats Input Builder", layout="wide")
+st.title("SmarterEats Input Builder")
+st.caption(f"DB: `{_db_path()}` · CSV: `{INPUT_CSV}`")
+
+with st.sidebar:
+    mode = st.radio(
+        "Mode",
+        ["Manual Search", "Cleaner Mode"],
+        index=0,
+        help=(
+            "Manual: search OFF and build rows by hand. "
+            "Cleaner: review pending rows from output/discovery_results.csv."
+        ),
+    )
+    st.divider()
+    st.markdown("### Search settings")
+    fetch_meta = st.checkbox(
+        "Fetch images + last-updated from OFF",
+        value=True,
+        help="Adds 1-3s on first search per query (parallel + cached). Disable for offline / fast.",
+        disabled=(mode == "Cleaner Mode"),
+    )
+    result_limit = st.slider(
+        "Max results", 5, 20, 10,
+        disabled=(mode == "Cleaner Mode"),
+    )
+
+conn = _connect()
+if conn is None and mode == "Manual Search":
+    st.error(
+        f"OFF database not found at `{_db_path()}`. "
+        "Set FOOD_DB_PATH or place the file at `./off_products.db`."
+    )
+    st.stop()
+
+if mode == "Manual Search":
+    render_manual_mode(conn, fetch_meta=fetch_meta, result_limit=result_limit)
+else:
+    render_cleaner_mode()
+
 st.divider()
 
-# Current input.csv view.
+# Current input.csv view (always visible).
 st.subheader("Current input.csv")
 df_show = load_csv()
 if df_show.empty:

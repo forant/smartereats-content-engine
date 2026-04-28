@@ -194,26 +194,65 @@ export FOOD_DB_PATH="/Users/stellar87/Developer/foodscore/backend/off_products.d
 python main.py
 ```
 
-## Building input.csv (helper UI)
+## Discovery + cleanup workflow
 
-`input_builder.py` is a local Streamlit app that searches the OFF database
-and appends clean rows to `input.csv` — no backend calls, no scoring, no
-rendering. One-time setup:
+The system has three responsibilities, kept in separate scripts:
+
+```
+discover_candidates.py   → discover and score promising comparisons
+input_builder.py         → review / clean / approve into input.csv
+main.py                  → render cards + write blog inputs
+```
+
+### 1. Discover candidates
+
+`discover_candidates.py` walks the OFF DB for promising foods in a small
+set of buckets (smoothie, juice, granola, protein bar, kids yogurt, …),
+filters to rows with usable nutrition, scores only the promising ones
+against a cached set of reference foods (Snickers, Coca-Cola, Frosted
+Flakes, Doritos / Pringles, Skittles), and writes one `pending` row per
+kept comparison to `output/discovery_results.csv`.
+
+```
+export BACKEND_BASE_URL="http://localhost:8000"
+export FOOD_DB_PATH="/Users/.../foodscore/backend/off_products.db"
+./venv/bin/python discover_candidates.py
+```
+
+Re-running is safe — existing `(candidate_barcode, reference_barcode)`
+pairs are skipped, so each run only adds new discoveries. One failed
+score doesn't stop the batch.
+
+### 2. Build / clean input.csv (Streamlit)
+
+`input_builder.py` is a local Streamlit app with two modes (selectable
+in the sidebar):
 
 ```
 pip install -r requirements-builder.txt
-```
-
-Then run from the project root:
-
-```
 streamlit run input_builder.py
 ```
 
-Pick `format`, `framing_type`, `purpose`, search OFF for each food, edit
-the display name and label, preview the row, click **Append to input.csv**.
-The `pair_id` auto-increments. The current `input.csv` is shown as a table
-at the bottom with a download button.
+**Manual Search Mode** — search OFF directly, pick Food A / Food B from
+rich result cards (per-serving nutrition, missing-field flags, image,
+last-updated, completeness score), edit display name + label, preview,
+**Append to input.csv**.
+
+**Cleaner Mode** — load `output/discovery_results.csv`, sort the
+`pending` rows by `postability_score` descending, and step through them
+one at a time. Each row shows the candidate (food_a) and reference
+(food_b) context (scores, what_helps, what_hurts, content angle), then
+exposes editable `food_*` fields plus `format` / `framing_type` /
+`purpose`. **Approve** appends to `input.csv` with an auto-incremented
+`pair_id` and marks the discovery row `approved`; **Skip** marks it
+`skipped`. Discovery rows already approved or skipped don't reappear in
+the queue.
+
+### 3. Render cards (main.py)
+
+Once `input.csv` has the rows you want, run `main.py` as before to score,
+write `output/results.csv`, generate the per-row blog inputs JSON, and
+render the PNG cards.
 
 ## Output
 
