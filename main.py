@@ -44,6 +44,25 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _barcode_variants(barcode: str) -> list[str]:
+    """Return barcode variants to try when looking up.
+
+    OFF stores 13-digit EAN. US UPCs (12 digits) are typically stored with a
+    leading '0'. Some entries also keep the bare 12-digit form. Try the
+    user's value first, then a leading-zero-padded variant, then a stripped
+    variant — whichever path matches first wins.
+    """
+    out = [barcode]
+    if barcode.isdigit():
+        if len(barcode) == 12:
+            out.append("0" + barcode)
+        elif len(barcode) == 13 and barcode.startswith("0"):
+            out.append(barcode[1:])
+    # Dedupe while preserving order.
+    seen = set()
+    return [b for b in out if not (b in seen or seen.add(b))]
+
+
 def lookup_product(conn: sqlite3.Connection, barcode: str) -> Optional[dict]:
     """Return a dict with keys: code, name, brand, nutriments (dict),
     serving_size, serving_quantity, ingredients_text. None if not found."""
@@ -51,26 +70,29 @@ def lookup_product(conn: sqlite3.Connection, barcode: str) -> Optional[dict]:
     if not barcode:
         return None
 
-    # Prefer canonical_products if present (curated/merged OFF data).
-    if _table_exists(conn, "canonical_products"):
-        row = conn.execute(
-            "SELECT code, canonical_name AS name, canonical_brand AS brand, "
-            "nutriments, serving_size, serving_quantity, ingredients_text "
-            "FROM canonical_products WHERE code = ?",
-            (barcode,),
-        ).fetchone()
-        if row:
-            return _row_to_product(row)
+    has_canonical = _table_exists(conn, "canonical_products")
+    has_products = _table_exists(conn, "products")
 
-    if _table_exists(conn, "products"):
-        row = conn.execute(
-            "SELECT code, product_name AS name, brands AS brand, "
-            "nutriments, serving_size, serving_quantity, ingredients_text "
-            "FROM products WHERE code = ?",
-            (barcode,),
-        ).fetchone()
-        if row:
-            return _row_to_product(row)
+    for variant in _barcode_variants(barcode):
+        if has_canonical:
+            row = conn.execute(
+                "SELECT code, canonical_name AS name, canonical_brand AS brand, "
+                "nutriments, serving_size, serving_quantity, ingredients_text "
+                "FROM canonical_products WHERE code = ?",
+                (variant,),
+            ).fetchone()
+            if row:
+                return _row_to_product(row)
+
+        if has_products:
+            row = conn.execute(
+                "SELECT code, product_name AS name, brands AS brand, "
+                "nutriments, serving_size, serving_quantity, ingredients_text "
+                "FROM products WHERE code = ?",
+                (variant,),
+            ).fetchone()
+            if row:
+                return _row_to_product(row)
 
     return None
 
