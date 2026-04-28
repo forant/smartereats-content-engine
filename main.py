@@ -297,102 +297,217 @@ def is_health_halo(row: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Hook generation
+# Headline generation
 #
-# food_a is always the subject. Templates branch by `format`:
+# food_a is always the subject. food_b is a baseline reference. Headlines
+# select one of four modes:
 #
-#   comparison: PARITY / WORSE / BETTER (food_a vs food_b)
-#   exposure:   single-item attack on food_a's halo
-#   swap:       recommend food_b as the actionable alternative
-#   ranking:    no card, no hook (filtered upstream)
+#   shock     — small score gap; "wait, these are the same?"
+#   exposure  — food_a has a health halo; debunk the halo
+#   dominance — large score gap; punchy, decisive
+#   swap      — explicitly recommend food_b as the alternative
+#
+# Mode selection (food_a is the subject; halo is precomputed):
+#
+#   format == 'swap'                → 'swap'
+#   format == 'exposure'            → 'exposure'
+#   abs(diff) <= 1                  → 'shock'
+#   halo                            → 'exposure'
+#   abs(diff) >= 3                  → 'dominance'
+#   else                            → 'shock'
+#
+# Templates are picked deterministically by pair_id mod template count,
+# so the same pair always renders the same headline across runs.
 # ---------------------------------------------------------------------------
 
-COMPARISON_TEMPLATES: dict[str, list[str]] = {
-    "PARITY": [
-        "{a} is basically the same as {b}",
-        "{a} isn’t much better than {b}",
+# Hedging language the spec forbids in any headline. Validated at import.
+FORBIDDEN_HEADLINE_WORDS = (
+    "slightly", "somewhat", "edges", "a bit", "kind of",
+    "not by much", "relatively",
+)
+
+HEADLINE_TEMPLATES: dict[str, list[str]] = {
+    "shock": [
+        "Wait… this is basically the same?",
+        "You’re not making a better choice",
+        "This isn’t actually healthier",
+        "These are closer than you think",
+        "Don’t kid yourself — this is the same",
+        "Not the win you wanted",
+        "{a} isn’t the upgrade you think",
     ],
-    "WORSE": [
-        "{a} is worse than {b}",
-        "You’re better off eating {b} than this",
+    "exposure": [
+        "Looks healthy. Isn’t.",
+        "This isn’t as healthy as you think",
+        "This ‘healthy’ snack is misleading",
+        "Parents think this is healthy",
+        "The ‘healthy’ option isn’t",
+        "Healthy on the label. Not on the inside.",
+        "Don’t fall for the health halo",
+        "{a} isn’t the health food you think",
     ],
-    "BETTER": [
-        "{a} is better than {b} — but not by much",
-        "{a} wins, but it’s not as healthy as it looks",
+    # Dominance is split internally by direction so templates can be
+    # decisive without contradicting the card visuals. The public mode
+    # name is still 'dominance'.
+    "dominance_a_wins": [
+        "{a} is the better choice. Period.",
+        "This isn’t even close!",
+        "Pick {a}. It’s not subtle.",
+        "The numbers don’t lie",
+        "There’s no contest",
+        "{a} wins. Hard.",
+        "Big gap. Easy choice.",
+    ],
+    "dominance_a_loses": [
+        "Stop choosing {a}!",
+        "Skip {a}",
+        "Don’t pick {a}",
+        "{a} loses. Hard.",
+        "Big gap — {a} is on the wrong side",
+        "There’s no contest — and {a} loses",
+        "{a} isn’t the choice",
+    ],
+    "swap": [
+        "Stop eating this. Do this instead!",
+        "Swap {a} for {b}",
+        "This one change matters",
+        "Eat {b}, not {a}",
+        "Make this swap",
+        "Trade up: {b} over {a}",
+        "{b}, every time",
+        "One swap, big difference",
     ],
 }
 
-EXPOSURE_TEMPLATES_BAD = [
-    "{a} isn’t as healthy as you think",
-    "The truth about {a}",
-    "Stop trusting {a}",
-]
-EXPOSURE_TEMPLATES_OK = [
-    "{a} is fine — but it isn’t a health food",
-    "{a} is okay, not great",
-]
 
-SWAP_TEMPLATES = [
-    "Swap {a} for {b}",
-    "Try {b} instead of {a}",
-    "{b} over {a}, every time",
-]
+def _validate_headline_templates() -> None:
+    """Reject any template that contains a forbidden hedge word, and any
+    template longer than 12 words. Runs once at import time."""
+    for mode, templates in HEADLINE_TEMPLATES.items():
+        for t in templates:
+            lower = t.lower()
+            for w in FORBIDDEN_HEADLINE_WORDS:
+                if w in lower:
+                    raise ValueError(
+                        f"headline template '{t}' (mode={mode}) contains forbidden word '{w}'"
+                    )
+            # Word count cap. Treat punctuation as part of the adjacent word.
+            word_count = len(t.split())
+            if word_count > 12:
+                raise ValueError(
+                    f"headline template '{t}' (mode={mode}) exceeds 12 words ({word_count})"
+                )
+            # Punctuation rule: at most one '!' or one '?', never both.
+            if t.count("!") + t.count("?") > 1:
+                raise ValueError(
+                    f"headline template '{t}' (mode={mode}) violates punctuation rule"
+                )
+            if "!" in t and "?" in t:
+                raise ValueError(
+                    f"headline template '{t}' (mode={mode}) mixes ! and ?"
+                )
 
 
-def _hook_case(score_a: int, score_b: int) -> str:
-    diff = score_a - score_b
-    if abs(diff) <= 1:
-        return "PARITY"
-    if diff <= -2:
-        return "WORSE"
-    return "BETTER"
+_validate_headline_templates()
 
 
-def generate_hook(
+def select_headline_mode(
+    fmt: str,
+    score_a: Optional[int],
+    score_b: Optional[int],
+    halo: bool,
+) -> str:
+    """Pick one of: 'shock', 'exposure', 'dominance', 'swap'.
+    Mode is the public label; the dominance template is chosen by direction
+    inside the headline generator."""
+    if fmt == "swap":
+        return "swap"
+    if fmt == "exposure":
+        return "exposure"
+    if score_a is None or score_b is None:
+        return "shock"  # safe fallback
+    diff = abs(score_a - score_b)
+    if diff <= 1:
+        return "shock"
+    if halo:
+        return "exposure"
+    if diff >= 3:
+        return "dominance"
+    return "shock"
+
+
+def _det_index(pair_id: str, n: int) -> int:
+    """Deterministic index from pair_id. Numeric pair_ids use the integer;
+    non-numeric ones use a stable character-sum hash."""
+    if n <= 0:
+        return 0
+    digits = re.sub(r"[^0-9]", "", str(pair_id))
+    if digits:
+        return int(digits) % n
+    return sum(ord(c) for c in str(pair_id)) % n
+
+
+def generate_headline_deterministic(
     row: dict,
     fmt: str,
     score_a: Optional[int],
     score_b: Optional[int],
-    style_variants: dict[str, int],
-) -> tuple[str, str, str]:
-    """Return (hook, relation, hook_style). Empty when score_a is missing
-    or format is 'ranking'.
+    halo: bool,
+) -> tuple[str, str]:
+    """Return (headline, headlineMode). Empty headline + empty mode when
+    the row has no scoreable food_a."""
+    if score_a is None or fmt == "ranking":
+        return "", ""
 
-    `style_variants` is mutated to rotate variants across rows.
+    mode = select_headline_mode(fmt, score_a, score_b, halo)
+    _, _, a_label, b_label = resolve_names(row)
+    pair_id = clean_cell(row.get("pair_id"))
+
+    if mode == "dominance":
+        # food_b is always present in this branch (mode selection requires
+        # a_score and b_score to compute the diff).
+        templates = (
+            HEADLINE_TEMPLATES["dominance_a_wins"]
+            if (score_b is not None and score_a > score_b)
+            else HEADLINE_TEMPLATES["dominance_a_loses"]
+        )
+    else:
+        templates = HEADLINE_TEMPLATES[mode]
+
+    template = templates[_det_index(pair_id, len(templates))]
+    headline = template.format(a=a_label, b=b_label or a_label)
+    return headline, mode
+
+
+def generate_headline_with_openai(  # pragma: no cover - placeholder
+    row: dict,
+    fmt: str,
+    score_a: Optional[int],
+    score_b: Optional[int],
+    halo: bool,
+) -> tuple[str, str]:
+    """TODO: wire to the OpenAI API once integration is approved.
+
+    Should accept the same arguments as the deterministic generator and
+    return (headline, headlineMode). Until enabled, callers fall back to
+    `generate_headline_deterministic`. Do NOT call this from main() yet.
     """
-    if fmt == "ranking" or score_a is None:
-        return "", "", ""
+    raise NotImplementedError(
+        "OpenAI headline generation is not yet integrated; use "
+        "generate_headline_deterministic for now."
+    )
 
-    a_display, b_display, a_label, b_label = resolve_names(row)
 
-    if fmt == "exposure":
-        relation = ""  # not meaningful for single-item exposure
-        templates = EXPOSURE_TEMPLATES_BAD if score_a <= 5 else EXPOSURE_TEMPLATES_OK
-        key = "EXPOSURE_BAD" if score_a <= 5 else "EXPOSURE_OK"
-        variant = style_variants.get(key, 0)
-        hook = templates[variant % len(templates)].format(a=a_label)
-        style_variants[key] = variant + 1
-        return hook, relation, key
-
-    if fmt == "swap":
-        if score_b is None:
-            return "", "", ""
-        relation = score_relation(score_a, score_b)
-        variant = style_variants.get("SWAP", 0)
-        hook = SWAP_TEMPLATES[variant % len(SWAP_TEMPLATES)].format(a=a_label, b=b_label)
-        style_variants["SWAP"] = variant + 1
-        return hook, relation, "SWAP"
-
-    # comparison (default)
-    if score_b is None:
-        return "", "", ""
-    relation = score_relation(score_a, score_b)
-    case = _hook_case(score_a, score_b)
-    templates = COMPARISON_TEMPLATES[case]
-    variant = style_variants.get(case, 0)
-    hook = templates[variant % len(templates)].format(a=a_label, b=b_label)
-    style_variants[case] = variant + 1
-    return hook, relation, case
+def generate_headline(
+    row: dict,
+    fmt: str,
+    score_a: Optional[int],
+    score_b: Optional[int],
+    halo: bool,
+) -> tuple[str, str]:
+    """Top-level dispatcher. For now always uses the deterministic generator.
+    Swap in OpenAI here once it's ready."""
+    return generate_headline_deterministic(row, fmt, score_a, score_b, halo)
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +704,6 @@ def main() -> int:
     os.makedirs("output", exist_ok=True)
 
     results = []
-    style_variants: dict[str, int] = {}
     POSTABILITY_THRESHOLD = 7
     for _, row in df.iterrows():
         row_dict = row.to_dict()
@@ -629,7 +743,7 @@ def main() -> int:
                 "food_b_score": None, "food_b_interpretation": "",
                 "food_b_what_helps": "", "food_b_what_hurts": "",
                 "score_diff": None,
-                "hook": "", "hook_style": "",
+                "headline": "", "headlineMode": "",
                 "content_priority": 0,
                 "postability_score": 0,
                 "verdict": "",
@@ -656,7 +770,7 @@ def main() -> int:
                 "food_b_score": None, "food_b_interpretation": "",
                 "food_b_what_helps": "", "food_b_what_hurts": "",
                 "score_diff": None,
-                "hook": "", "hook_style": "",
+                "headline": "", "headlineMode": "",
                 "content_priority": 0,
                 "postability_score": 0,
                 "verdict": "",
@@ -668,7 +782,8 @@ def main() -> int:
 
         errors = [m for m in (a_err, b_err) if m]
         if errors:
-            hook, relation, hook_style = "", "", ""
+            headline, headline_mode = "", ""
+            relation = ""
             score_diff = None
             priority = 0
             postability = 0
@@ -676,13 +791,14 @@ def main() -> int:
             status = "error"
             error_message = "; ".join(errors)
         else:
-            hook, relation, hook_style = generate_hook(
-                row_dict, fmt, a_score, b_score, style_variants,
+            halo = is_health_halo(row_dict)
+            headline, headline_mode = generate_headline(
+                row_dict, fmt, a_score, b_score, halo,
             )
+            relation = score_relation(a_score, b_score) if (a_score is not None and b_score is not None) else ""
             score_diff = (a_score - b_score) if (a_score is not None and b_score is not None) else None
             priority = content_priority(framing, relation) if relation else 0
-            halo = is_health_halo(row_dict)
-            postability = postability_score(fmt, hook, halo, a_score, b_score, relation)
+            postability = postability_score(fmt, headline, halo, a_score, b_score, relation)
             verdict = verdict_sentence(a_display, a_score, a_helps, a_hurts)
             if postability >= POSTABILITY_THRESHOLD:
                 status = "ok"
@@ -700,8 +816,8 @@ def main() -> int:
             "food_b_what_helps": " ; ".join(b_helps),
             "food_b_what_hurts": " ; ".join(b_hurts),
             "score_diff": score_diff,
-            "hook": hook,
-            "hook_style": hook_style,
+            "headline": headline,
+            "headlineMode": headline_mode,
             "content_priority": priority,
             "postability_score": postability,
             "verdict": verdict,
@@ -710,12 +826,12 @@ def main() -> int:
         })
 
         if status == "ok":
-            tag = f"[{fmt}]"
+            tag = f"[{fmt}/{headline_mode}]"
             b_part = f"vs {b_display} ({b_score})" if b_score is not None else "(single)"
             print(f"[{pair_id}] {tag} {a_display} ({a_score}) {b_part} "
-                  f"post={postability} — {hook}")
+                  f"post={postability} — {headline}")
         elif status == "low_postability":
-            print(f"[{pair_id}] FILTERED post={postability} — {hook or '(no hook)'}")
+            print(f"[{pair_id}] FILTERED post={postability} — {headline or '(no headline)'}")
         else:
             print(f"[{pair_id}] ERROR: {error_message}")
 
@@ -729,7 +845,7 @@ def main() -> int:
         "food_b_score", "food_b_interpretation",
         "food_b_what_helps", "food_b_what_hurts",
         "score_diff", "purpose", "framing_type",
-        "hook", "hook_style", "content_priority",
+        "headline", "headlineMode", "content_priority",
         "postability_score", "verdict",
         "status", "error_message",
     ])
@@ -747,8 +863,8 @@ def main() -> int:
             "format": r["format"],
             "purpose": r["purpose"],
             "framing_type": r["framing_type"],
-            "hook": r["hook"],
-            "hook_style": r["hook_style"],
+            "headline": r["headline"],
+            "headlineMode": r["headlineMode"],
             "verdict": r["verdict"],
             "postability_score": r["postability_score"],
             "food_a": {
@@ -796,7 +912,7 @@ def main() -> int:
         for r in top:
             print(
                 f"  [{r['pair_id']}] post={r['postability_score']:>2}  "
-                f"[{r['format']}] {r['food_a_display_name']} ({r['food_a_score']}) — {r['hook']}"
+                f"[{r['format']}/{r['headlineMode']}] {r['food_a_display_name']} ({r['food_a_score']}) — {r['headline']}"
             )
 
     # Render PNG cards for status=='ok' rows.

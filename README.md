@@ -99,32 +99,67 @@ The raw product name from the database is **not** used anywhere in output.
   - `sugar_shock` — call out high-sugar items.
   - blank → default framing.
 
-## Hook rules
+## Headline rules
 
-Hooks are deterministic and branch by `format`. food_a is always the
-subject; food_b is reference only in the `comparison` format and is
-explicitly recommended in `swap`.
+Headlines are deterministic for now. The renderer reads `row["headline"]`;
+the engine writes `headline` and `headlineMode` to `output/results.csv`.
 
-### `comparison` — `diff = score_a - score_b`
+### Modes (`headlineMode`)
 
-| case | when | variants (rotated) |
-|---|---|---|
-| `PARITY` | `abs(diff) ≤ 1` | `{a} is basically the same as {b}` · `{a} isn’t much better than {b}` |
-| `WORSE` | `diff ≤ -2` | `{a} is worse than {b}` · `You’re better off eating {b} than this` |
-| `BETTER` | `diff ≥ 2` | `{a} is better than {b} — but not by much` · `{a} wins, but it’s not as healthy as it looks` |
+There are four allowed modes. food_a is always the subject; food_b is the
+reference baseline (or, for `swap`, the explicit recommendation).
 
-### `exposure` — single-item halo attack
+- `shock` — small score gap; "wait, these are the same?"
+- `exposure` — food_a has a health halo; debunk it
+- `dominance` — large score gap; punchy and decisive
+- `swap` — explicit "swap food_a for food_b" framing
 
-| key | when | variants |
-|---|---|---|
-| `EXPOSURE_BAD` | `score_a ≤ 5` | `{a} isn’t as healthy as you think` · `The truth about {a}` · `Stop trusting {a}` |
-| `EXPOSURE_OK` | `score_a ≥ 6` | `{a} is fine — but it isn’t a health food` · `{a} is okay, not great` |
+### Mode selection
 
-### `swap` — recommend food_b as the pick
+```
+if format == 'swap':                                      → swap
+elif format == 'exposure':                                → exposure
+elif abs(score_a - score_b) <= 1:                         → shock
+elif food_a has health halo (framing or category):        → exposure
+elif abs(score_a - score_b) >= 3:                         → dominance
+else:                                                     → shock
+```
 
-| key | variants |
-|---|---|
-| `SWAP` | `Swap {a} for {b}` · `Try {b} instead of {a}` · `{b} over {a}, every time` |
+### Templates (6–8 per mode)
+
+Each mode has 6–8 approved templates (see `HEADLINE_TEMPLATES` in
+[main.py](main.py)). For `dominance` there are two internal sub-arrays
+keyed by direction (a-wins / a-loses) so templates can be punchy without
+contradicting the card visuals — the public `headlineMode` is still
+`dominance`.
+
+Hard rules enforced at import time:
+
+- max 12 words per template
+- never both `!` and `?` in the same headline
+- at most one of `!` or `?`
+- no hedging language: `slightly`, `somewhat`, `edges`, `a bit`,
+  `kind of`, `not by much`, `relatively`
+
+The validator raises at import if any template breaks these rules.
+
+### Selection within a mode
+
+The template index is `pair_id mod template_count`, so the same pair
+always renders the same headline across runs.
+
+### Future: OpenAI
+
+Generation is split into:
+
+- `generate_headline_deterministic(row, fmt, score_a, score_b, halo)`
+  — what's wired up today.
+- `generate_headline_with_openai(...)` — placeholder, raises
+  `NotImplementedError`. Same signature so the dispatcher can swap it
+  in without touching callers.
+- `generate_headline(...)` — the dispatcher. Currently always calls the
+  deterministic generator. To turn on OpenAI later, change one line in
+  the dispatcher.
 
 ## Postability filter
 
@@ -170,13 +205,13 @@ food_a_score, food_a_interpretation, food_a_what_helps, food_a_what_hurts,
 food_b_name, food_b_display_name, food_b_label, food_b_barcode,
 food_b_score, food_b_interpretation, food_b_what_helps, food_b_what_hurts,
 score_diff, purpose, framing_type,
-hook, hook_style, content_priority,
+headline, headlineMode, content_priority,
 postability_score, verdict,
 status, error_message
 ```
 
-- `hook_style` — `PARITY` / `WORSE` / `BETTER` (comparison) ·
-  `EXPOSURE_BAD` / `EXPOSURE_OK` (exposure) · `SWAP` (swap).
+- `headlineMode` — one of `shock`, `exposure`, `dominance`, `swap`
+  (see Headline rules below).
 - `postability_score` — 1-10, deterministic. Only rows with
   `postability_score ≥ 7` get rendered as cards and written as blog inputs.
 - `verdict` — one-sentence summary of food_a, ready for blog synthesis.
@@ -207,8 +242,8 @@ generate a blog post downstream (e.g. via OpenAI). Shape:
   "format": "swap",
   "purpose": "breakfast",
   "framing_type": "",
-  "hook": "Swap Orange Juice for a whole orange",
-  "hook_style": "SWAP",
+  "headline": "Swap Orange Juice for a whole orange",
+  "headlineMode": "swap",
   "verdict": "Avoid OJ — concentrated sugar and stripped of fiber.",
   "postability_score": 9,
   "food_a": {

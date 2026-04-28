@@ -397,11 +397,11 @@ def _draw_pill(canvas: Image.Image, draw, text: str) -> None:
     draw.text((x0 + PILL_PAD_X, text_y), text, font=font, fill=(255, 255, 255))
 
 
-def _draw_hook(draw, hook: str) -> None:
-    if not hook:
+def _draw_headline(draw, headline: str) -> None:
+    if not headline:
         return
     lines, font, line_h = _fit(
-        draw, hook,
+        draw, headline,
         max_width=HOOK_MAX_W,
         max_lines=HOOK_MAX_LINES,
         sizes=(96, 88, 80, 72, 64, 56),
@@ -758,7 +758,8 @@ def render_card(row: dict) -> Image.Image:
     draw = _draw_container(canvas)
 
     fmt = (row.get("format") or "comparison").strip().lower() or "comparison"
-    hook = (row.get("hook") or "").strip()
+    # Accept either the new `headline` column or the legacy `hook` column.
+    headline = (row.get("headline") or row.get("hook") or "").strip()
     purpose = (row.get("purpose") or "").strip()
     framing = (row.get("framing_type") or "").strip()
     a_display = (row.get("food_a_display_name") or row.get("food_a_name") or "").strip()
@@ -771,7 +772,7 @@ def render_card(row: dict) -> Image.Image:
     b_helps = _split_helps(row.get("food_b_what_helps") or "")
 
     _draw_pill(canvas, draw, _category_pill_label(fmt, framing, purpose))
-    _draw_hook(draw, hook)
+    _draw_headline(draw, headline)
 
     if fmt == "exposure":
         _draw_hero_card(canvas, draw, a_display, a_score)
