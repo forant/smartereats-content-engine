@@ -64,8 +64,16 @@ Optional columns (any subset, in any order):
 ```
 food_a_display_name,food_b_display_name,
 food_a_label,food_b_label,
-framing_type
+framing_type,
+format
 ```
+
+`format` is one of:
+
+- `comparison` (default) — food_a as subject, food_b as baseline
+- `exposure` — single-item attack on food_a's halo (food_b is ignored)
+- `swap` — food_a is what to swap out, food_b is the recommended pick
+- `ranking` — recorded but skipped for now (placeholder for future logic)
 
 ### Naming fields
 
@@ -93,19 +101,43 @@ The raw product name from the database is **not** used anywhere in output.
 
 ## Hook rules
 
-Hooks are deterministic. The relation between scores is one of:
+Hooks are deterministic and branch by `format`. food_a is always the
+subject; food_b is reference only in the `comparison` format and is
+explicitly recommended in `swap`.
 
-- `tie` — same score
-- `a_barely_wins` — A wins by exactly 1
-- `a_loses` — A scores below B (any margin)
-- `a_wins` — A wins by 2+
+### `comparison` — `diff = score_a - score_b`
 
-| framing | tie | a_barely_wins | a_loses | a_wins |
-|---|---|---|---|---|
-| `health_halo` | `{A} is basically the same as {B}` | `{A} is barely better than {B}` | `{A} is worse than {B}` | `{A} wins, but it’s not as clean as it looks` |
-| `kids_food` | `This kids snack is basically candy` | `This kids snack is barely better than candy` | `This kids snack is basically candy` | `This kids snack actually holds up` |
-| `sugar_shock` | `{A} is basically dessert` | `{A} is barely better than dessert` | `{A} is basically dessert` | `{A} beats dessert, but check the sugar` |
-| default | `{A} is basically the same as {B}` | `{A} is barely better than {B}` | `{A} is worse than {B}` | `{A} actually beats {B}` |
+| case | when | variants (rotated) |
+|---|---|---|
+| `PARITY` | `abs(diff) ≤ 1` | `{a} is basically the same as {b}` · `{a} isn’t much better than {b}` |
+| `WORSE` | `diff ≤ -2` | `{a} is worse than {b}` · `You’re better off eating {b} than this` |
+| `BETTER` | `diff ≥ 2` | `{a} is better than {b} — but not by much` · `{a} wins, but it’s not as healthy as it looks` |
+
+### `exposure` — single-item halo attack
+
+| key | when | variants |
+|---|---|---|
+| `EXPOSURE_BAD` | `score_a ≤ 5` | `{a} isn’t as healthy as you think` · `The truth about {a}` · `Stop trusting {a}` |
+| `EXPOSURE_OK` | `score_a ≥ 6` | `{a} is fine — but it isn’t a health food` · `{a} is okay, not great` |
+
+### `swap` — recommend food_b as the pick
+
+| key | variants |
+|---|---|
+| `SWAP` | `Swap {a} for {b}` · `Try {b} instead of {a}` · `{b} over {a}, every time` |
+
+## Postability filter
+
+Every scored row gets a deterministic `postability_score` (1-10) considering
+surprise, belief challenge, clarity, and emotional impact. Only rows with
+`postability_score ≥ 7` are:
+
+- written to `output/blog_inputs/`
+- rendered as PNG cards
+- marked `status=ok`
+
+Lower-scoring rows stay in `output/results.csv` with `status=low_postability`
+for QA but produce no card or blog input.
 
 ## Content priority
 
@@ -132,14 +164,28 @@ python main.py
 ### `output/results.csv`
 
 ```
-pair_id,
+pair_id, format,
 food_a_name, food_a_display_name, food_a_label, food_a_barcode,
-food_a_score, food_a_interpretation, food_a_what_helps,
+food_a_score, food_a_interpretation, food_a_what_helps, food_a_what_hurts,
 food_b_name, food_b_display_name, food_b_label, food_b_barcode,
-food_b_score, food_b_interpretation, food_b_what_helps,
-score_diff, purpose, framing_type, hook, content_priority,
+food_b_score, food_b_interpretation, food_b_what_helps, food_b_what_hurts,
+score_diff, purpose, framing_type,
+hook, hook_style, content_priority,
+postability_score, verdict,
 status, error_message
 ```
+
+- `hook_style` — `PARITY` / `WORSE` / `BETTER` (comparison) ·
+  `EXPOSURE_BAD` / `EXPOSURE_OK` (exposure) · `SWAP` (swap).
+- `postability_score` — 1-10, deterministic. Only rows with
+  `postability_score ≥ 7` get rendered as cards and written as blog inputs.
+- `verdict` — one-sentence summary of food_a, ready for blog synthesis.
+- `status` — `ok` (passed filter) · `low_postability` (filtered) ·
+  `skipped` (format=ranking) · `error` (scoring failure).
+- `food_*_what_helps` and `food_*_what_hurts` — `" ; "`-joined lists from
+  the backend's `whatHelps` / `whatHurts`. The card renderer reads food_a's
+  helps or hurts (never food_b's, except in `swap` where food_b's helps
+  describe why it's the recommended pick).
 
 `food_*_what_helps` is a `" ; "`-joined list of strings that the backend
 returned in `whatHelps`. The card renderer reads this column to draw the
@@ -150,6 +196,36 @@ the row is recorded with `status=error` and a message in `error_message`,
 and the script continues. After the run, the script prints totals and the
 top 5 rows by `content_priority`.
 
+### `output/blog_inputs/pair_{id}.json`
+
+For each `status=ok` row, a JSON file with the structured inputs needed to
+generate a blog post downstream (e.g. via OpenAI). Shape:
+
+```json
+{
+  "pair_id": "30",
+  "format": "swap",
+  "purpose": "breakfast",
+  "framing_type": "",
+  "hook": "Swap Orange Juice for a whole orange",
+  "hook_style": "SWAP",
+  "verdict": "Avoid OJ — concentrated sugar and stripped of fiber.",
+  "postability_score": 9,
+  "food_a": {
+    "name": "Tropicana Orange Juice",
+    "display_name": "Orange Juice",
+    "score": 4,
+    "interpretation": "...",
+    "what_helps": [...],
+    "what_hurts": [...]
+  },
+  "food_b": { ... }   // null for exposure
+}
+```
+
+This script does not call OpenAI — these files are inputs for a separate
+blog-generation step.
+
 ### `output/cards/*.png`
 
 For every `status=ok` row, the script renders a **1080x1920** vertical
@@ -159,30 +235,32 @@ share-card, sorted by `content_priority` descending. Filenames:
 output/cards/pair_{pair_id_zfill_3}_{a-display-slug}-vs-{b-display-slug}.png
 ```
 
-Card layout (white bg, dark text, green accent, orange score):
+Card layout (light gray canvas, centered white container with soft shadow):
 
-- **Top-left pill** — green capsule with white text. Uses `framing_type` if
-  set (`"Health Halo"`, `"Sugar Shock"`, `"Kids Food"`), otherwise the
-  capitalized `purpose` (`"Snack"`, `"Breakfast"`, …).
+- **White rounded container** with a drop shadow on a `#F7F7F7` canvas, so
+  the content reads as a card in a feed rather than floating text.
+- **Top-left green pill** with white text — `framing_type` if set,
+  otherwise capitalized `purpose`.
 - **Left-aligned headline** — the hook in bold near-black, auto-fit to
-  ≤3 lines, max 900px wide.
-- **Two side-by-side comparison cards** (440px wide, 40px gap) with rounded
-  corners. The higher score is the **winner**:
-  - light green fill + green border + green `BEST CHOICE` capsule at the
-    top of the card
-  - the loser gets a neutral light-gray fill with a subtle border
-  - on a tie, neither card is highlighted
-- **Score circle** inside each card — soft warm peach fill with the score
-  in large bold orange, and a muted `/ 10` directly below.
-- **Up to 2 green-bullet reasons** under the winning card, sourced from the
-  winner's `food_*_what_helps`. Hidden on tie or when no helps are
-  available.
-- **Bottom summary line** in centered muted gray. Uses an explicit `summary`
-  column from the CSV if present, otherwise distills the winner's first
-  one or two `whatHelps` phrases (`"More protein, less processed"`). On a
-  tie, falls back to `"Closer than you think."`.
-- **Footer** — uses `assets/logo.png` if it exists in the project root,
-  otherwise renders bold `SmarterEats` text. Centered near the bottom.
+  ≤3 lines, max 880px wide.
+- **food_a hero card** (full width). The verdict is keyed off **food_a's
+  absolute score**, not the comparison:
+  - score `≥ 7` → green `GOOD CHOICE` pill, light-green card fill
+  - score `5–6` → amber `MEH` pill, soft-amber fill
+  - score `≤ 4` → red `AVOID` pill, soft-red fill
+  - large display name + a big orange score in a warm circle, with
+    `/ 10` to the right
+- **food_b reference strip** below the hero — small, gray, single line:
+  `vs.  {display_name}     {score} / 10`. Never highlighted as a winner
+  and never carries a "better choice" pill.
+- **Up to 2 bullets describing food_a only**:
+  - food_a score `≥ 5` → green-dot bullets from `food_a_what_helps`
+  - food_a score `< 5` → red-dot bullets from `food_a_what_hurts`
+  - `food_b_what_helps` is intentionally never shown
+  - copy is cleaned (`"competitor"` clauses stripped, first letter
+    capitalized)
+- **Logo footer** — `assets/logo.png` at 80px height, centered. Falls back
+  to bold `SmarterEats` text if the file is absent.
 
 To use a custom logo, drop a transparent PNG at one of:
 

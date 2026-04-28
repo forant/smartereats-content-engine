@@ -1,18 +1,21 @@
 """Render 1080x1920 vertical SmarterEats share-card style PNGs.
 
-Reads output/results.csv, renders one card per ok row, sorted by
-content_priority desc, into output/cards/.
+The card is ABOUT food_a. food_b is a baseline reference: shown clearly,
+but visually quieter and never praised.
 
-Layout (top → bottom):
+Layout (top → bottom), all inside a centered white rounded container with
+soft shadow on a light-gray canvas:
+
   - Green category pill (top-left)
-  - Left-aligned bold headline (the hook)
-  - Two side-by-side comparison cards
-      - Winner: light green tint + green border + "BEST CHOICE" label
-      - Loser:  light gray + subtle border
-      - Each card has a soft-warm score circle with the score in orange
-  - Optional bullet reasons under the winner (from whatHelps)
-  - Centered gray summary line
-  - Centered footer (logo if assets/logo.png exists, else "SmarterEats")
+  - Left-aligned bold headline (food_a as subject)
+  - Two side-by-side cards, equal width:
+      - food_a (left): verdict pill (BEST CHOICE / AVOID) from food_a's
+        absolute score, tinted background + strong border, larger score
+        circle, full-saturation orange digit
+      - food_b (right): light-gray fill, no pill, smaller circle,
+        muted-orange digit — context only
+  - Up to 2 left-aligned bullets describing food_a only
+  - Centered logo
 """
 
 from __future__ import annotations
@@ -23,57 +26,95 @@ import sys
 from typing import Optional
 
 import pandas as pd
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
-# --- Canvas -----------------------------------------------------------------
+# --- Canvas / container -----------------------------------------------------
 
 CARD_W = 1080
 CARD_H = 1920
-SIDE_PAD = 80
+SIDE_PAD = 90  # horizontal padding inside the white container
+
+CONTAINER_MARGIN = 40
+CONTAINER_X0 = CONTAINER_MARGIN
+CONTAINER_Y0 = CONTAINER_MARGIN
+CONTAINER_X1 = CARD_W - CONTAINER_MARGIN
+CONTAINER_Y1 = CARD_H - CONTAINER_MARGIN
+CONTAINER_RADIUS = 40
 
 # --- Palette ----------------------------------------------------------------
 
-BG_COLOR     = (255, 255, 255)
-TEXT_DARK    = (17, 24, 39)       # near-black headline / titles
-TEXT_BODY    = (55, 65, 81)       # bullet body
-MUTED        = (107, 114, 128)    # summary, /10, footer
-ACCENT_GREEN = (22, 163, 74)      # pill, BEST CHOICE, bullet dot, winner border
-ACCENT_GREEN_SOFT = (220, 252, 231)  # winner card fill (light green)
-ACCENT_GREEN_BORDER_LIGHT = (134, 239, 172)
-ORANGE       = (234, 88, 12)      # score number
-WARM_BG      = (255, 237, 213)    # score circle fill (warm peach)
-WARM_BORDER  = (253, 186, 116)    # score circle border
-LOSER_BG     = (244, 244, 245)    # neutral light gray card
-LOSER_BORDER = (228, 228, 231)
+CANVAS_TOP    = (252, 252, 253)   # subtle vertical gradient — top
+CANVAS_BOTTOM = (242, 243, 246)   # subtle vertical gradient — bottom
+CANVAS_BG    = (247, 247, 247)    # fallback when gradient is disabled
+CONTAINER_BG = (255, 255, 255)
+TEXT_DARK    = (17, 24, 39)
+TEXT_BODY    = (55, 65, 81)
+MUTED        = (107, 114, 128)
+ACCENT_GREEN = (22, 163, 74)
+GREEN_SOFT   = (220, 252, 231)
+GREEN_BORDER = (134, 239, 172)
+WARN_AMBER   = (217, 119, 6)
+WARN_AMBER_SOFT = (254, 243, 199)
+WARN_AMBER_BORDER = (252, 211, 77)
+DANGER_RED   = (220, 38, 38)
+DANGER_SOFT  = (254, 226, 226)
+DANGER_BORDER = (252, 165, 165)
+ORANGE       = (234, 88, 12)
+ORANGE_MUTED = (180, 110, 60)
+WARM_BG      = (255, 237, 213)
+WARM_BG_DIM  = (245, 235, 220)
+WARM_BORDER  = (253, 186, 116)
+WARM_BORDER_DIM = (220, 200, 180)
+REFERENCE_BG = (244, 244, 245)
+REFERENCE_BORDER = (228, 228, 231)
+SHADOW_RGBA  = (0, 0, 0, 55)
 
 # --- Layout constants -------------------------------------------------------
 
-PILL_X = 80
-PILL_Y = 80
-PILL_PAD_X = 28
-PILL_PAD_Y = 14
+PILL_X = SIDE_PAD
+PILL_Y = 110
+PILL_PAD_X = 24
+PILL_PAD_Y = 12
 
-HOOK_X = 80
+HOOK_X = SIDE_PAD
 HOOK_Y_TOP = 220
-HOOK_MAX_W = 920
+HOOK_MAX_W = 880
 HOOK_MAX_LINES = 3
 
-CARDS_Y_TOP = 720
+# Side-by-side comparison cards (equal width).
+CARDS_Y_TOP = 680
 CARDS_HEIGHT = 600
 CARD_GAP = 40
-CARD_W_INNER = (CARD_W - SIDE_PAD * 2 - CARD_GAP) // 2  # 440
+CARD_W_INNER = (CARD_W - SIDE_PAD * 2 - CARD_GAP) // 2  # 425
 CARD_RADIUS = 36
 
-CIRCLE_R = 130
+# Both cards share the same content y-bands so names + circles + /10
+# horizontally align across the pair. food_a uses the pill band; food_b
+# leaves it empty.
+CARD_PILL_Y_LOCAL = 30
+CARD_NAME_Y_LOCAL = 120
+CARD_CIRCLE_CY_LOCAL = 350
+CARD_SUFFIX_Y_LOCAL = 510
 
-BULLETS_Y_TOP = 1380
+CIRCLE_R_FOOD_A = 130   # subject — slightly bigger
+CIRCLE_R_FOOD_B = 105   # baseline — visually quieter
+
+BULLETS_Y_TOP = 1330
 BULLET_DOT_R = 9
 BULLETS_MAX = 2
-BULLET_LINE_GAP = 16
+BULLET_LINE_GAP = 14
 
-SUMMARY_Y = 1700
-FOOTER_Y = 1830
+LOGO_TARGET_H = 144   # ~1.5x the prior 96
+LOGO_Y = 1660
+
+# Shadow / glow presets — subtle and consistent.
+CARD_SHADOW_HERO    = dict(offset_y=14, blur=22, alpha=55)
+CARD_SHADOW_SUBJECT = dict(offset_y=10, blur=16, alpha=50)
+CARD_SHADOW_QUIET   = dict(offset_y=5,  blur=10, alpha=25)
+PILL_SHADOW         = dict(offset_y=3,  blur=5,  alpha=35)
+CIRCLE_GLOW_STRONG  = dict(blur=22, alpha=70, expand=18)
+CIRCLE_GLOW_QUIET   = dict(blur=14, alpha=28, expand=8)
 
 # --- Font loading -----------------------------------------------------------
 
@@ -121,7 +162,6 @@ def _th(font, text: str = "Hg") -> int:
 
 
 def _wrap_if_fits(draw, text: str, font, max_width: int, max_lines: int) -> Optional[list[str]]:
-    """Wrap into <= max_lines lines that each fit max_width, else None."""
     words = text.split()
     lines: list[str] = []
     current = ""
@@ -183,6 +223,54 @@ def _fit(draw, text: str, max_width: int, max_lines: int, sizes: tuple[int, ...]
     return _wrap_force(draw, text, font, max_width, max_lines), font, int(sizes[-1] * 1.18)
 
 
+# --- Canvas + shadow / glow effects -----------------------------------------
+
+def _gradient_canvas() -> Image.Image:
+    """Return a fresh canvas with a very light vertical gradient."""
+    img = Image.new("RGB", (CARD_W, CARD_H))
+    draw = ImageDraw.Draw(img)
+    h = CARD_H - 1
+    for y in range(CARD_H):
+        t = y / h
+        r = round(CANVAS_TOP[0] + (CANVAS_BOTTOM[0] - CANVAS_TOP[0]) * t)
+        g = round(CANVAS_TOP[1] + (CANVAS_BOTTOM[1] - CANVAS_TOP[1]) * t)
+        b = round(CANVAS_TOP[2] + (CANVAS_BOTTOM[2] - CANVAS_TOP[2]) * t)
+        draw.line([(0, y), (CARD_W, y)], fill=(r, g, b))
+    return img
+
+
+def _composite_layer(canvas: Image.Image, layer: Image.Image) -> None:
+    """Composite an RGBA layer onto an RGB canvas (in place)."""
+    base = canvas.convert("RGBA")
+    base = Image.alpha_composite(base, layer)
+    canvas.paste(base.convert("RGB"), (0, 0))
+
+
+def _add_rect_shadow(canvas: Image.Image, x0: int, y0: int, x1: int, y1: int,
+                     radius: int, *, offset_y: int, blur: int, alpha: int) -> None:
+    """Drop a soft shadow under a rounded rect, then composite onto canvas."""
+    layer = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).rounded_rectangle(
+        (x0 + 2, y0 + offset_y, x1 + 2, y1 + offset_y),
+        radius=radius, fill=(0, 0, 0, alpha),
+    )
+    layer = layer.filter(ImageFilter.GaussianBlur(radius=blur))
+    _composite_layer(canvas, layer)
+
+
+def _add_circle_glow(canvas: Image.Image, cx: int, cy: int, radius: int,
+                     color: tuple, *, blur: int, alpha: int, expand: int) -> None:
+    """Soft warm halo behind a score circle."""
+    layer = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+    r = radius + expand
+    ImageDraw.Draw(layer).ellipse(
+        (cx - r, cy - r, cx + r, cy + r),
+        fill=color + (alpha,),
+    )
+    layer = layer.filter(ImageFilter.GaussianBlur(radius=blur))
+    _composite_layer(canvas, layer)
+
+
 # --- Filename ---------------------------------------------------------------
 
 def _slug(text: str) -> str:
@@ -199,17 +287,11 @@ def _filename(pair_id: str, a_name: str, b_name: str) -> str:
 # --- Pill / category text ---------------------------------------------------
 
 PILL_LABELS = {
-    "snack": "Snack",
-    "meal": "Meal",
-    "breakfast": "Breakfast",
-    "dessert": "Dessert",
-    "treat": "Treat",
-    "post_workout": "Post-Workout",
-    "pre_workout": "Pre-Workout",
-    "ingredient": "Ingredient",
-    "beverage": "Beverage",
-    "health_halo": "Health Halo",
-    "kids_food": "Kids Food",
+    "snack": "Snack", "meal": "Meal", "breakfast": "Breakfast",
+    "dessert": "Dessert", "treat": "Treat",
+    "post_workout": "Post-Workout", "pre_workout": "Pre-Workout",
+    "ingredient": "Ingredient", "beverage": "Beverage",
+    "health_halo": "Health Halo", "kids_food": "Kids Food",
     "sugar_shock": "Sugar Shock",
 }
 
@@ -226,10 +308,81 @@ def _pill_label(framing: str, purpose: str) -> str:
     return purpose.replace("_", " ").title() if purpose else "Snack"
 
 
+def _category_pill_label(fmt: str, framing: str, purpose: str) -> str:
+    """Top-left pill text — overrides per format."""
+    fmt = (fmt or "").lower()
+    if fmt == "exposure":
+        if (framing or "").lower() == "sugar_shock":
+            return "Hidden Sugar"
+        return "Not What You Think"
+    if fmt == "swap":
+        return "Better Choice"
+    return _pill_label(framing, purpose)
+
+
+# --- Verdict (food_a absolute) ----------------------------------------------
+
+def _verdict(score: Optional[int]) -> tuple[str, tuple, tuple, tuple, tuple]:
+    """Return (label, pill_bg, pill_fg, card_bg, card_border) for food_a,
+    keyed off food_a's *absolute* score. Binary verdict per spec."""
+    if score is None:
+        return ("", REFERENCE_BG, MUTED, REFERENCE_BG, REFERENCE_BORDER)
+    if score >= 7:
+        return ("BEST CHOICE", ACCENT_GREEN, (255, 255, 255),
+                GREEN_SOFT, ACCENT_GREEN)
+    return ("AVOID", DANGER_RED, (255, 255, 255),
+            DANGER_SOFT, DANGER_BORDER)
+
+
+# --- Bullet cleanup ---------------------------------------------------------
+
+def _clean_bullet(text: str) -> str:
+    if not text:
+        return ""
+    s = str(text).strip()
+    s = re.sub(r"\s+than\s+(the\s+)?competitors?\b.*$", "", s, flags=re.I)
+    s = re.sub(r"\b(?:the\s+)?competitors?\b", "alternatives", s, flags=re.I)
+    s = re.sub(r"\s+", " ", s).strip().rstrip(".")
+    if s:
+        s = s[0].upper() + s[1:]
+    return s
+
+
+def _split_helps(raw: str) -> list[str]:
+    if not raw:
+        return []
+    parts = re.split(r"\s*;\s*", str(raw))
+    cleaned = [_clean_bullet(p) for p in parts]
+    return [p for p in cleaned if p]
+
+
 # --- Drawers ----------------------------------------------------------------
 
-def _draw_pill(draw, text: str) -> int:
-    """Top-left green pill. Returns its bottom-y (for layout reference)."""
+def _draw_container(canvas: Image.Image) -> ImageDraw.ImageDraw:
+    """Soft shadow + white rounded container."""
+    shadow = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(shadow)
+    sdraw.rounded_rectangle(
+        (CONTAINER_X0 + 6, CONTAINER_Y0 + 14,
+         CONTAINER_X1 + 6, CONTAINER_Y1 + 14),
+        radius=CONTAINER_RADIUS,
+        fill=SHADOW_RGBA,
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=22))
+    base = canvas.convert("RGBA")
+    base = Image.alpha_composite(base, shadow)
+    canvas.paste(base.convert("RGB"), (0, 0))
+
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(
+        (CONTAINER_X0, CONTAINER_Y0, CONTAINER_X1, CONTAINER_Y1),
+        radius=CONTAINER_RADIUS,
+        fill=CONTAINER_BG,
+    )
+    return draw
+
+
+def _draw_pill(canvas: Image.Image, draw, text: str) -> None:
     font = _font(34, bold=True)
     text_w = _tw(draw, text, font)
     text_h = _th(font, text)
@@ -237,16 +390,14 @@ def _draw_pill(draw, text: str) -> int:
     pill_h = text_h + PILL_PAD_Y * 2 + 4
     x0, y0 = PILL_X, PILL_Y
     x1, y1 = x0 + pill_w, y0 + pill_h
+    _add_rect_shadow(canvas, x0, y0, x1, y1, radius=pill_h // 2, **PILL_SHADOW)
     draw.rounded_rectangle((x0, y0, x1, y1), radius=pill_h // 2, fill=ACCENT_GREEN)
-    # Vertical text centering uses the font's actual top offset.
     bbox = font.getbbox(text)
     text_y = y0 + (pill_h - (bbox[3] - bbox[1])) // 2 - bbox[1]
     draw.text((x0 + PILL_PAD_X, text_y), text, font=font, fill=(255, 255, 255))
-    return y1
 
 
 def _draw_hook(draw, hook: str) -> None:
-    """Left-aligned bold headline."""
     if not hook:
         return
     lines, font, line_h = _fit(
@@ -262,113 +413,143 @@ def _draw_hook(draw, hook: str) -> None:
         y += line_h
 
 
-def _draw_score_circle(draw, cx: int, cy: int, score: Optional[int]) -> None:
-    r = CIRCLE_R
-    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=WARM_BG, outline=WARM_BORDER, width=2)
+def _draw_capsule(canvas: Image.Image, draw, text: str, x_center: int, y: int,
+                  fill, fg, *, font_size: int = 28) -> int:
+    font = _font(font_size, bold=True)
+    label_w = _tw(draw, text, font)
+    label_h = _th(font, text)
+    pad_x, pad_y = 16, 9
+    cap_w = label_w + pad_x * 2
+    cap_h = label_h + pad_y * 2 + 2
+    cap_x = x_center - cap_w // 2
+    _add_rect_shadow(canvas, cap_x, y, cap_x + cap_w, y + cap_h,
+                     radius=cap_h // 2, **PILL_SHADOW)
+    draw.rounded_rectangle(
+        (cap_x, y, cap_x + cap_w, y + cap_h),
+        radius=cap_h // 2, fill=fill,
+    )
+    bbox = font.getbbox(text)
+    ty = y + (cap_h - (bbox[3] - bbox[1])) // 2 - bbox[1]
+    draw.text((cap_x + pad_x, ty), text, font=font, fill=fg)
+    return cap_h
+
+
+def _draw_score_circle(canvas: Image.Image, draw, cx: int, cy: int,
+                       score: Optional[int], *,
+                       radius: int, fill, border, color,
+                       glow: Optional[dict] = None) -> None:
+    if glow is not None:
+        # Halo color matches the score color so the circle reads "lit".
+        _add_circle_glow(canvas, cx, cy, radius, color, **glow)
+    r = radius
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=fill, outline=border, width=2)
     text = str(score if score is not None else "—")
-    # Auto-fit the digit (1-2 chars typically).
-    for size in (200, 180, 160, 140):
+    target = int(r * 1.6)
+    for size in (240, 220, 200, 180, 160, 140):
         font = _font(size, bold=True)
-        if _tw(draw, text, font) <= r * 1.6:
+        if _tw(draw, text, font) <= target:
             break
     bbox = font.getbbox(text)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     text_x = cx - text_w // 2 - bbox[0]
     text_y = cy - text_h // 2 - bbox[1]
-    draw.text((text_x, text_y), text, font=font, fill=ORANGE)
+    draw.text((text_x, text_y), text, font=font, fill=color)
 
 
 def _draw_comparison_card(
+    canvas: Image.Image,
     draw,
     x0: int,
-    y0: int,
-    width: int,
-    height: int,
     display_name: str,
     score: Optional[int],
-    is_winner: bool,
+    *,
+    is_subject: bool,
 ) -> None:
-    x1, y1 = x0 + width, y0 + height
-    if is_winner:
-        fill, border, border_w = ACCENT_GREEN_SOFT, ACCENT_GREEN, 4
+    """One card in the side-by-side pair.
+
+    is_subject=True  → food_a, the focus: tinted bg, BEST CHOICE / AVOID
+                        pill, full-color score.
+    is_subject=False → food_b, the baseline: light gray, no pill, muted
+                        score, smaller circle.
+    """
+    y0 = CARDS_Y_TOP
+    x1 = x0 + CARD_W_INNER
+    y1 = y0 + CARDS_HEIGHT
+    cx = x0 + CARD_W_INNER // 2
+
+    if is_subject:
+        label, pill_bg, pill_fg, card_bg, card_border = _verdict(score)
+        border_w = 4
+        score_color, circle_fill, circle_border = ORANGE, WARM_BG, WARM_BORDER
+        radius = CIRCLE_R_FOOD_A
+        name_sizes = (54, 48, 44, 40, 36)
+        name_color = TEXT_DARK
+        shadow = CARD_SHADOW_SUBJECT
+        glow = CIRCLE_GLOW_STRONG
     else:
-        fill, border, border_w = LOSER_BG, LOSER_BORDER, 2
-    draw.rounded_rectangle((x0, y0, x1, y1), radius=CARD_RADIUS, fill=fill,
-                           outline=border, width=border_w)
+        label = ""
+        card_bg, card_border = REFERENCE_BG, REFERENCE_BORDER
+        border_w = 2
+        score_color, circle_fill, circle_border = ORANGE_MUTED, WARM_BG_DIM, WARM_BORDER_DIM
+        radius = CIRCLE_R_FOOD_B
+        name_sizes = (44, 40, 36, 32, 28)
+        name_color = TEXT_BODY
+        shadow = CARD_SHADOW_QUIET
+        glow = CIRCLE_GLOW_QUIET
 
-    inner_pad = 28
-    # Reserve the top band for BEST CHOICE so winner and loser titles align.
-    BEST_CHOICE_BAND = 70  # vertical space taken by capsule + gap
-    cur_y = y0 + 30
+    _add_rect_shadow(canvas, x0, y0, x1, y1, radius=CARD_RADIUS, **shadow)
+    draw.rounded_rectangle((x0, y0, x1, y1), radius=CARD_RADIUS,
+                           fill=card_bg, outline=card_border, width=border_w)
 
-    if is_winner:
-        label = "BEST CHOICE"
-        label_font = _font(28, bold=True)
-        label_w = _tw(draw, label, label_font)
-        label_h = _th(label_font, label)
-        cap_pad_x, cap_pad_y = 16, 8
-        cap_w = label_w + cap_pad_x * 2
-        cap_h = label_h + cap_pad_y * 2 + 2
-        cap_x = x0 + (width - cap_w) // 2
-        cap_y = cur_y
-        draw.rounded_rectangle(
-            (cap_x, cap_y, cap_x + cap_w, cap_y + cap_h),
-            radius=cap_h // 2, fill=ACCENT_GREEN,
-        )
-        bbox = label_font.getbbox(label)
-        ty = cap_y + (cap_h - (bbox[3] - bbox[1])) // 2 - bbox[1]
-        draw.text((cap_x + cap_pad_x, ty), label, font=label_font, fill=(255, 255, 255))
-    cur_y += BEST_CHOICE_BAND  # advance past the reserved band on both cards
+    # Pill band — only the subject card uses it; the baseline leaves the
+    # band empty so the two cards' name/circle/suffix lines stay aligned.
+    if is_subject and label:
+        _draw_capsule(canvas, draw, label, cx, y0 + CARD_PILL_Y_LOCAL,
+                      pill_bg, pill_fg, font_size=30)
 
-    # Display name — auto-fit, up to 2 lines, centered.
-    name_max_w = width - inner_pad * 2
+    # Display name (auto-fit, up to 2 lines, centered horizontally).
+    name_max_w = CARD_W_INNER - 56
     name_lines, name_font, name_line_h = _fit(
         draw, display_name or "",
         max_width=name_max_w, max_lines=2,
-        sizes=(48, 42, 36, 32, 28),
+        sizes=name_sizes,
         bold=True,
     )
+    name_block_h = name_line_h * len(name_lines)
+    name_y = y0 + CARD_NAME_Y_LOCAL - name_block_h // 2 + name_line_h // 2
+    cur_y = name_y
     for ln in name_lines:
         lw = _tw(draw, ln, name_font)
-        draw.text((x0 + (width - lw) // 2, cur_y), ln, font=name_font, fill=TEXT_DARK)
+        draw.text((cx - lw // 2, cur_y), ln, font=name_font, fill=name_color)
         cur_y += name_line_h
-    cur_y += 14
 
-    # Score circle
-    cx = x0 + width // 2
-    circle_cy = cur_y + CIRCLE_R + 6
-    _draw_score_circle(draw, cx, circle_cy, score)
+    # Score circle — both cards center on the same y for alignment.
+    circle_cy = y0 + CARD_CIRCLE_CY_LOCAL
+    _draw_score_circle(canvas, draw, cx, circle_cy, score,
+                       radius=radius, fill=circle_fill,
+                       border=circle_border, color=score_color, glow=glow)
 
-    # /10 below circle
-    suffix = "/ 10"
+    # / 10 below the circle.
     suffix_font = _font(36, bold=True)
+    suffix = "/ 10"
     sw = _tw(draw, suffix, suffix_font)
-    sy = circle_cy + CIRCLE_R + 26
-    draw.text((cx - sw // 2, sy), suffix, font=suffix_font, fill=MUTED)
+    suffix_color = MUTED
+    draw.text((cx - sw // 2, y0 + CARD_SUFFIX_Y_LOCAL),
+              suffix, font=suffix_font, fill=suffix_color)
 
 
-def _split_helps(raw: str) -> list[str]:
-    if not raw:
-        return []
-    # results.csv stores helps joined by " ; "
-    parts = re.split(r"\s*;\s*", str(raw))
-    return [p.strip() for p in parts if p and p.strip()]
-
-
-def _draw_bullets(draw, bullets: list[str]) -> int:
-    """Render up to BULLETS_MAX bullets under the cards. Returns y after."""
+def _draw_bullets(draw, bullets: list[str], dot_color: tuple) -> None:
     if not bullets:
-        return BULLETS_Y_TOP
+        return
     bullets = bullets[:BULLETS_MAX]
     font = _font(34, bold=False)
     line_h = int(font.size * 1.25)
-    max_text_w = CARD_W - SIDE_PAD * 2 - 60  # room for dot + gap
+    max_text_w = CARD_W - SIDE_PAD * 2 - 60
 
     y = BULLETS_Y_TOP
     for b in bullets:
         lines = _wrap_if_fits(draw, b, font, max_text_w, 2) or _wrap_force(draw, b, font, max_text_w, 2)
-        # Bullet dot on the first line.
         first = True
         for ln in lines:
             if first:
@@ -377,62 +558,15 @@ def _draw_bullets(draw, bullets: list[str]) -> int:
                 draw.ellipse(
                     (dot_cx - BULLET_DOT_R, dot_cy - BULLET_DOT_R,
                      dot_cx + BULLET_DOT_R, dot_cy + BULLET_DOT_R),
-                    fill=ACCENT_GREEN,
+                    fill=dot_color,
                 )
                 text_x = dot_cx + BULLET_DOT_R + 18
             else:
-                text_x = SIDE_PAD + (BULLET_DOT_R * 2) + 22  # indent continuation
+                text_x = SIDE_PAD + (BULLET_DOT_R * 2) + 22
             draw.text((text_x, y), ln, font=font, fill=TEXT_BODY)
             y += line_h
             first = False
         y += BULLET_LINE_GAP
-    return y
-
-
-def _make_summary(
-    winner_helps: list[str],
-    loser_helps: list[str],
-    explicit_summary: str,
-    a_score: Optional[int],
-    b_score: Optional[int],
-) -> str:
-    if explicit_summary:
-        return explicit_summary
-    if a_score is not None and b_score is not None and a_score == b_score:
-        return "Closer than you think."
-    if not winner_helps:
-        return ""
-    # Distill: keep the first comma-separated phrase of up to 2 helps.
-    parts: list[str] = []
-    for h in winner_helps[:2]:
-        first = h.split(",")[0].strip().rstrip(".")
-        # Trim trailing prepositional clauses for punchiness.
-        first = re.sub(r"\s+(supports|with|than|per|in)\s+.*$", "", first, flags=re.I)
-        if first and first.lower() not in (p.lower() for p in parts):
-            parts.append(first)
-    if not parts:
-        return ""
-    out = parts[0]
-    for p in parts[1:]:
-        out += ", " + (p[:1].lower() + p[1:] if len(p) > 1 else p.lower())
-    return out
-
-
-def _draw_summary(draw, text: str) -> None:
-    if not text:
-        return
-    lines, font, line_h = _fit(
-        draw, text,
-        max_width=CARD_W - SIDE_PAD * 2,
-        max_lines=2,
-        sizes=(34, 30, 28),
-        bold=False,
-    )
-    y = SUMMARY_Y
-    for ln in lines:
-        lw = _tw(draw, ln, font)
-        draw.text(((CARD_W - lw) // 2, y), ln, font=font, fill=MUTED)
-        y += line_h
 
 
 # --- Logo / footer ----------------------------------------------------------
@@ -452,37 +586,25 @@ def _logo_path() -> Optional[str]:
     return None
 
 
-def _draw_footer(img: Image.Image, draw: ImageDraw.ImageDraw) -> None:
+def _draw_footer(canvas: Image.Image, draw: ImageDraw.ImageDraw) -> None:
     logo = _logo_path()
     if logo:
         try:
             with Image.open(logo) as src:
                 src = src.convert("RGBA")
-                target_h = 72
+                target_h = LOGO_TARGET_H
                 ratio = target_h / src.height
                 target_w = int(src.width * ratio)
                 src = src.resize((target_w, target_h), Image.LANCZOS)
-            wm = "SmarterEats"
-            wm_font = _font(30, bold=True)
-            ww = _tw(draw, wm, wm_font)
-            gap = 14
-            total_w = target_w + gap + ww
-            if total_w <= CARD_W - SIDE_PAD * 2:
-                lx = (CARD_W - total_w) // 2
-                img.paste(src, (lx, FOOTER_Y), src)
-                bbox = wm_font.getbbox(wm)
-                ty = FOOTER_Y + (target_h - (bbox[3] - bbox[1])) // 2 - bbox[1]
-                draw.text((lx + target_w + gap, ty), wm, font=wm_font, fill=TEXT_DARK)
-            else:
-                lx = (CARD_W - target_w) // 2
-                img.paste(src, (lx, FOOTER_Y), src)
+            lx = (CARD_W - target_w) // 2
+            canvas.paste(src, (lx, LOGO_Y), src)
             return
         except Exception:
-            pass  # fall through to text fallback
+            pass
     text = "SmarterEats"
-    font = _font(34, bold=True)
+    font = _font(40, bold=True)
     w = _tw(draw, text, font)
-    draw.text(((CARD_W - w) // 2, FOOTER_Y + 16), text, font=font, fill=TEXT_DARK)
+    draw.text(((CARD_W - w) // 2, LOGO_Y + 16), text, font=font, fill=TEXT_DARK)
 
 
 # --- Compose card -----------------------------------------------------------
@@ -501,10 +623,141 @@ def _to_int(v) -> Optional[int]:
         return None
 
 
-def render_card(row: dict) -> Image.Image:
-    img = Image.new("RGB", (CARD_W, CARD_H), BG_COLOR)
-    draw = ImageDraw.Draw(img)
+def _draw_hero_card(canvas: Image.Image, draw, display_name: str,
+                    score: Optional[int]) -> None:
+    """Single full-width card spanning both side-by-side slots — used for
+    `format=exposure`. Verdict pill comes from food_a's absolute score."""
+    label, pill_bg, pill_fg, card_bg, card_border = _verdict(score)
 
+    x0 = SIDE_PAD
+    y0 = CARDS_Y_TOP
+    x1 = CARD_W - SIDE_PAD
+    y1 = y0 + CARDS_HEIGHT
+    width = x1 - x0
+    cx = (x0 + x1) // 2
+
+    _add_rect_shadow(canvas, x0, y0, x1, y1, radius=CARD_RADIUS, **CARD_SHADOW_HERO)
+    draw.rounded_rectangle((x0, y0, x1, y1), radius=CARD_RADIUS,
+                           fill=card_bg, outline=card_border, width=4)
+
+    # Vertical flow: pill → name → score circle → /10. Use explicit gaps so
+    # a 2-line name doesn't bleed into the circle.
+    cur_y = y0 + 30
+    if label:
+        cap_font = _font(32, bold=True)
+        cap_h = _th(cap_font, label) + 9 * 2 + 2  # matches _draw_capsule sizing
+        _draw_capsule(canvas, draw, label, cx, cur_y, pill_bg, pill_fg, font_size=32)
+        cur_y += cap_h + 30
+
+    name_max_w = width - 80
+    name_lines, name_font, name_line_h = _fit(
+        draw, display_name or "",
+        max_width=name_max_w, max_lines=2,
+        sizes=(64, 56, 50, 44, 40),
+        bold=True,
+    )
+    for ln in name_lines:
+        lw = _tw(draw, ln, name_font)
+        draw.text((cx - lw // 2, cur_y), ln, font=name_font, fill=TEXT_DARK)
+        cur_y += name_line_h
+    cur_y += 18
+
+    radius = 150
+    circle_cy = cur_y + radius
+    _draw_score_circle(canvas, draw, cx, circle_cy, score,
+                       radius=radius, fill=WARM_BG,
+                       border=WARM_BORDER, color=ORANGE,
+                       glow=CIRCLE_GLOW_STRONG)
+
+    suffix_font = _font(40, bold=True)
+    suffix = "/ 10"
+    sw = _tw(draw, suffix, suffix_font)
+    sy = circle_cy + radius + 18
+    if sy + _th(suffix_font, suffix) > y1 - 20:
+        sy = y1 - _th(suffix_font, suffix) - 24
+    draw.text((cx - sw // 2, sy), suffix, font=suffix_font, fill=MUTED)
+
+
+def _draw_swap_arrow(draw) -> None:
+    """Centered arrow between the swap cards."""
+    cx = CARD_W // 2
+    cy = CARDS_Y_TOP + CARD_CIRCLE_CY_LOCAL
+    font = _font(96, bold=True)
+    text = "→"
+    w = _tw(draw, text, font)
+    bbox = font.getbbox(text)
+    h = bbox[3] - bbox[1]
+    draw.text((cx - w // 2, cy - h // 2 - bbox[1]), text, font=font, fill=ACCENT_GREEN)
+
+
+def _draw_swap_card(canvas: Image.Image, draw, x0: int, display_name: str,
+                    score: Optional[int], *, role: str) -> None:
+    """A single card for the swap layout. role is 'avoid' or 'pick'."""
+    y0 = CARDS_Y_TOP
+    x1 = x0 + CARD_W_INNER
+    y1 = y0 + CARDS_HEIGHT
+    cx = x0 + CARD_W_INNER // 2
+
+    if role == "pick":
+        label = "PICK THIS"
+        pill_bg, pill_fg = ACCENT_GREEN, (255, 255, 255)
+        card_bg, card_border = GREEN_SOFT, ACCENT_GREEN
+        score_color, circle_fill, circle_border = ORANGE, WARM_BG, WARM_BORDER
+        radius = CIRCLE_R_FOOD_A
+        name_color = TEXT_DARK
+        border_w = 4
+        shadow = CARD_SHADOW_SUBJECT
+        glow = CIRCLE_GLOW_STRONG
+    else:  # avoid
+        label = "SWAP OUT"
+        pill_bg, pill_fg = DANGER_RED, (255, 255, 255)
+        card_bg, card_border = DANGER_SOFT, DANGER_BORDER
+        score_color, circle_fill, circle_border = ORANGE_MUTED, WARM_BG_DIM, WARM_BORDER_DIM
+        radius = CIRCLE_R_FOOD_B
+        name_color = TEXT_BODY
+        border_w = 3
+        shadow = CARD_SHADOW_QUIET
+        glow = CIRCLE_GLOW_QUIET
+
+    _add_rect_shadow(canvas, x0, y0, x1, y1, radius=CARD_RADIUS, **shadow)
+    draw.rounded_rectangle((x0, y0, x1, y1), radius=CARD_RADIUS,
+                           fill=card_bg, outline=card_border, width=border_w)
+
+    _draw_capsule(canvas, draw, label, cx, y0 + CARD_PILL_Y_LOCAL,
+                  pill_bg, pill_fg, font_size=28)
+
+    name_max_w = CARD_W_INNER - 56
+    sizes = (54, 48, 44, 40, 36) if role == "pick" else (44, 40, 36, 32, 28)
+    name_lines, name_font, name_line_h = _fit(
+        draw, display_name or "",
+        max_width=name_max_w, max_lines=2,
+        sizes=sizes, bold=True,
+    )
+    name_block_h = name_line_h * len(name_lines)
+    name_y = y0 + CARD_NAME_Y_LOCAL - name_block_h // 2 + name_line_h // 2
+    cur_y = name_y
+    for ln in name_lines:
+        lw = _tw(draw, ln, name_font)
+        draw.text((cx - lw // 2, cur_y), ln, font=name_font, fill=name_color)
+        cur_y += name_line_h
+
+    circle_cy = y0 + CARD_CIRCLE_CY_LOCAL
+    _draw_score_circle(canvas, draw, cx, circle_cy, score,
+                       radius=radius, fill=circle_fill,
+                       border=circle_border, color=score_color, glow=glow)
+
+    suffix_font = _font(36, bold=True)
+    suffix = "/ 10"
+    sw = _tw(draw, suffix, suffix_font)
+    draw.text((cx - sw // 2, y0 + CARD_SUFFIX_Y_LOCAL),
+              suffix, font=suffix_font, fill=MUTED)
+
+
+def render_card(row: dict) -> Image.Image:
+    canvas = _gradient_canvas()
+    draw = _draw_container(canvas)
+
+    fmt = (row.get("format") or "comparison").strip().lower() or "comparison"
     hook = (row.get("hook") or "").strip()
     purpose = (row.get("purpose") or "").strip()
     framing = (row.get("framing_type") or "").strip()
@@ -512,61 +765,44 @@ def render_card(row: dict) -> Image.Image:
     b_display = (row.get("food_b_display_name") or row.get("food_b_name") or "").strip()
     a_score = _to_int(row.get("food_a_score"))
     b_score = _to_int(row.get("food_b_score"))
+
     a_helps = _split_helps(row.get("food_a_what_helps") or "")
+    a_hurts = _split_helps(row.get("food_a_what_hurts") or "")
     b_helps = _split_helps(row.get("food_b_what_helps") or "")
 
-    # Determine winner.
-    if a_score is None or b_score is None:
-        winner = None
-    elif a_score > b_score:
-        winner = "a"
-    elif b_score > a_score:
-        winner = "b"
-    else:
-        winner = None  # tie → no highlighted winner
-
-    # Pill text.
-    pill = _pill_label(framing, purpose)
-    _draw_pill(draw, pill)
-
-    # Hook headline.
+    _draw_pill(canvas, draw, _category_pill_label(fmt, framing, purpose))
     _draw_hook(draw, hook)
 
-    # Comparison cards (side-by-side).
-    a_x = SIDE_PAD
-    b_x = SIDE_PAD + CARD_W_INNER + CARD_GAP
-    _draw_comparison_card(
-        draw, a_x, CARDS_Y_TOP, CARD_W_INNER, CARDS_HEIGHT,
-        display_name=a_display, score=a_score, is_winner=(winner == "a"),
-    )
-    _draw_comparison_card(
-        draw, b_x, CARDS_Y_TOP, CARD_W_INNER, CARDS_HEIGHT,
-        display_name=b_display, score=b_score, is_winner=(winner == "b"),
-    )
+    if fmt == "exposure":
+        _draw_hero_card(canvas, draw, a_display, a_score)
+        # Exposure bullets: lead with what's wrong with food_a.
+        if a_score is not None and a_score < 7 and a_hurts:
+            bullets, dot_color = a_hurts, DANGER_RED
+        else:
+            bullets, dot_color = a_helps, ACCENT_GREEN
+    elif fmt == "swap":
+        # food_a is what you should swap OUT; food_b is what to PICK.
+        a_x = SIDE_PAD
+        b_x = SIDE_PAD + CARD_W_INNER + CARD_GAP
+        _draw_swap_card(canvas, draw, a_x, a_display, a_score, role="avoid")
+        _draw_swap_card(canvas, draw, b_x, b_display, b_score, role="pick")
+        _draw_swap_arrow(draw)
+        bullets, dot_color = b_helps, ACCENT_GREEN
+    else:  # comparison (default)
+        a_x = SIDE_PAD
+        b_x = SIDE_PAD + CARD_W_INNER + CARD_GAP
+        _draw_comparison_card(canvas, draw, a_x, a_display, a_score, is_subject=True)
+        _draw_comparison_card(canvas, draw, b_x, b_display, b_score, is_subject=False)
+        # Bullets describe food_a's reality. Never mix in food_b's helps.
+        if a_score is not None and a_score < 5:
+            bullets, dot_color = a_hurts, DANGER_RED
+        else:
+            bullets, dot_color = a_helps, ACCENT_GREEN
 
-    # Bullets under winner.
-    if winner == "a":
-        winner_helps = a_helps
-    elif winner == "b":
-        winner_helps = b_helps
-    else:
-        winner_helps = []
-    _draw_bullets(draw, winner_helps[:BULLETS_MAX])
+    _draw_bullets(draw, bullets, dot_color)
+    _draw_footer(canvas, draw)
 
-    # Summary line.
-    explicit_summary = (row.get("summary") or "").strip()
-    summary = _make_summary(
-        winner_helps,
-        loser_helps=(b_helps if winner == "a" else a_helps),
-        explicit_summary=explicit_summary,
-        a_score=a_score, b_score=b_score,
-    )
-    _draw_summary(draw, summary)
-
-    # Footer (logo if assets/logo.png exists, else text).
-    _draw_footer(img, draw)
-
-    return img
+    return canvas
 
 
 # --- Public entrypoint ------------------------------------------------------

@@ -257,50 +257,227 @@ def resolve_names(row: dict) -> tuple[str, str, str, str]:
     return a_display, b_display, a_label, b_label
 
 
-def generate_hook(row: dict, score_a: Optional[int], score_b: Optional[int]) -> tuple[str, str]:
-    """Return (hook, relation). Empty hook when scores are missing."""
-    if score_a is None or score_b is None:
-        return "", ""
+# ---------------------------------------------------------------------------
+# Format detection
+# ---------------------------------------------------------------------------
 
-    _, _, a_label, b_label = resolve_names(row)
+VALID_FORMATS = ("comparison", "exposure", "swap", "ranking")
+
+
+def resolve_format(row: dict) -> str:
+    raw = clean_cell(row.get("format")).lower()
+    if raw in VALID_FORMATS:
+        return raw
+    return "comparison"  # default for legacy rows
+
+
+# ---------------------------------------------------------------------------
+# Health-halo detection (used for postability + exposure framing)
+# ---------------------------------------------------------------------------
+
+_HALO_KEYWORDS = (
+    "smoothie", "juice", "yogurt", "granola", "cereal", "protein bar",
+    "energy bar", "fruit snack", "kombucha", "almond milk", "oat milk",
+    "vitamin water", "fiber", "natural", "organic",
+    "naked", "clif", "kind", "rxbar", "chobani", "yoplait", "activia",
+    "special k", "honey nut", "cheerios",
+)
+
+
+def is_health_halo(row: dict) -> bool:
     framing = clean_cell(row.get("framing_type")).lower()
+    if framing in ("health_halo", "kids_food", "sugar_shock"):
+        return True
+    text = " ".join([
+        clean_cell(row.get("food_a_label")),
+        clean_cell(row.get("food_a_display_name")),
+        clean_cell(row.get("food_a_name")),
+    ]).lower()
+    return any(k in text for k in _HALO_KEYWORDS)
 
+
+# ---------------------------------------------------------------------------
+# Hook generation
+#
+# food_a is always the subject. Templates branch by `format`:
+#
+#   comparison: PARITY / WORSE / BETTER (food_a vs food_b)
+#   exposure:   single-item attack on food_a's halo
+#   swap:       recommend food_b as the actionable alternative
+#   ranking:    no card, no hook (filtered upstream)
+# ---------------------------------------------------------------------------
+
+COMPARISON_TEMPLATES: dict[str, list[str]] = {
+    "PARITY": [
+        "{a} is basically the same as {b}",
+        "{a} isn’t much better than {b}",
+    ],
+    "WORSE": [
+        "{a} is worse than {b}",
+        "You’re better off eating {b} than this",
+    ],
+    "BETTER": [
+        "{a} is better than {b} — but not by much",
+        "{a} wins, but it’s not as healthy as it looks",
+    ],
+}
+
+EXPOSURE_TEMPLATES_BAD = [
+    "{a} isn’t as healthy as you think",
+    "The truth about {a}",
+    "Stop trusting {a}",
+]
+EXPOSURE_TEMPLATES_OK = [
+    "{a} is fine — but it isn’t a health food",
+    "{a} is okay, not great",
+]
+
+SWAP_TEMPLATES = [
+    "Swap {a} for {b}",
+    "Try {b} instead of {a}",
+    "{b} over {a}, every time",
+]
+
+
+def _hook_case(score_a: int, score_b: int) -> str:
+    diff = score_a - score_b
+    if abs(diff) <= 1:
+        return "PARITY"
+    if diff <= -2:
+        return "WORSE"
+    return "BETTER"
+
+
+def generate_hook(
+    row: dict,
+    fmt: str,
+    score_a: Optional[int],
+    score_b: Optional[int],
+    style_variants: dict[str, int],
+) -> tuple[str, str, str]:
+    """Return (hook, relation, hook_style). Empty when score_a is missing
+    or format is 'ranking'.
+
+    `style_variants` is mutated to rotate variants across rows.
+    """
+    if fmt == "ranking" or score_a is None:
+        return "", "", ""
+
+    a_display, b_display, a_label, b_label = resolve_names(row)
+
+    if fmt == "exposure":
+        relation = ""  # not meaningful for single-item exposure
+        templates = EXPOSURE_TEMPLATES_BAD if score_a <= 5 else EXPOSURE_TEMPLATES_OK
+        key = "EXPOSURE_BAD" if score_a <= 5 else "EXPOSURE_OK"
+        variant = style_variants.get(key, 0)
+        hook = templates[variant % len(templates)].format(a=a_label)
+        style_variants[key] = variant + 1
+        return hook, relation, key
+
+    if fmt == "swap":
+        if score_b is None:
+            return "", "", ""
+        relation = score_relation(score_a, score_b)
+        variant = style_variants.get("SWAP", 0)
+        hook = SWAP_TEMPLATES[variant % len(SWAP_TEMPLATES)].format(a=a_label, b=b_label)
+        style_variants["SWAP"] = variant + 1
+        return hook, relation, "SWAP"
+
+    # comparison (default)
+    if score_b is None:
+        return "", "", ""
     relation = score_relation(score_a, score_b)
+    case = _hook_case(score_a, score_b)
+    templates = COMPARISON_TEMPLATES[case]
+    variant = style_variants.get(case, 0)
+    hook = templates[variant % len(templates)].format(a=a_label, b=b_label)
+    style_variants[case] = variant + 1
+    return hook, relation, case
 
-    if framing == "health_halo":
-        if relation == "a_loses":
-            hook = f"{a_label} is worse than {b_label}"
-        elif relation == "tie":
-            hook = f"{a_label} is basically the same as {b_label}"
-        elif relation == "a_barely_wins":
-            hook = f"{a_label} is barely better than {b_label}"
-        else:
-            hook = f"{a_label} wins, but it’s not as clean as it looks"
-    elif framing == "kids_food":
-        if relation in ("tie", "a_loses"):
-            hook = "This kids snack is basically candy"
-        elif relation == "a_barely_wins":
-            hook = "This kids snack is barely better than candy"
-        else:
-            hook = "This kids snack actually holds up"
-    elif framing == "sugar_shock":
-        if relation in ("tie", "a_loses"):
-            hook = f"{a_label} is basically dessert"
-        elif relation == "a_barely_wins":
-            hook = f"{a_label} is barely better than dessert"
-        else:
-            hook = f"{a_label} beats dessert, but check the sugar"
-    else:
-        if relation == "tie":
-            hook = f"{a_label} is basically the same as {b_label}"
-        elif relation == "a_barely_wins":
-            hook = f"{a_label} is barely better than {b_label}"
-        elif relation == "a_loses":
-            hook = f"{a_label} is worse than {b_label}"
-        else:
-            hook = f"{a_label} actually beats {b_label}"
 
-    return hook, relation
+# ---------------------------------------------------------------------------
+# Postability score (1–10) — gates output and rendering.
+# ---------------------------------------------------------------------------
+
+def postability_score(
+    fmt: str,
+    hook: str,
+    halo: bool,
+    score_a: Optional[int],
+    score_b: Optional[int],
+    relation: str,
+) -> int:
+    if score_a is None:
+        return 1
+
+    score = 5  # neutral baseline
+
+    if fmt == "comparison":
+        if halo and score_a <= 4:
+            score += 3
+        elif halo and score_a <= 6:
+            score += 2
+        elif halo:
+            score += 1
+        if relation in ("a_loses", "tie"):
+            score += 1
+        if score_a <= 3:
+            score += 1
+    elif fmt == "exposure":
+        if halo and score_a <= 5:
+            score += 3
+        elif halo:
+            score += 1
+        if score_a <= 3:
+            score += 1
+    elif fmt == "swap":
+        if score_b is not None:
+            diff = score_b - score_a
+            if diff >= 3:
+                score += 3
+            elif diff >= 2:
+                score += 2
+            elif diff >= 1:
+                score += 1
+        if halo and score_a <= 5:
+            score += 1
+
+    # Clarity: shorter hooks read sharper.
+    n = len((hook or "").split())
+    if 0 < n <= 8:
+        score += 1
+    elif n > 14:
+        score -= 1
+
+    return max(1, min(10, score))
+
+
+# ---------------------------------------------------------------------------
+# Verdict (one sentence, deterministic, for blog inputs)
+# ---------------------------------------------------------------------------
+
+def verdict_sentence(
+    food_a_display: str,
+    score_a: Optional[int],
+    helps: list[str],
+    hurts: list[str],
+) -> str:
+    name = food_a_display or "This product"
+    if score_a is None:
+        return ""
+    if score_a <= 3:
+        h = hurts[:2] if hurts else ["it's heavily processed"]
+        first = h[0].rstrip(".").lower()
+        tail = f" and {h[1].rstrip('.').lower()}" if len(h) > 1 else ""
+        return f"Avoid {name} — {first}{tail}."
+    if score_a <= 5:
+        top = (hurts[:1] or ["several nutritional concerns"])[0].rstrip(".").lower()
+        return f"{name} sits at {score_a}/10 — {top}."
+    if score_a <= 7:
+        top = (helps[:1] or ["a modest nutritional profile"])[0].rstrip(".").lower()
+        return f"{name} scores {score_a}/10, helped by {top}."
+    top = (helps[:1] or ["genuinely good nutrition"])[0].rstrip(".").lower()
+    return f"{name} is a solid {score_a}/10 — {top}."
 
 
 def content_priority(framing: str, relation: str) -> int:
@@ -345,21 +522,21 @@ def score_food(
     csv_name: str,
     barcode: str,
     purpose: str,
-) -> tuple[Optional[int], str, list[str], Optional[str]]:
-    """Return (score, interpretation, what_helps, error_message). On error, score is None."""
+) -> tuple[Optional[int], str, list[str], list[str], Optional[str]]:
+    """Return (score, interpretation, what_helps, what_hurts, error_message)."""
     barcode = clean_cell(barcode)
     if not barcode:
-        return None, "", [], f"missing barcode for {csv_name or '(unnamed)'}"
+        return None, "", [], [], f"missing barcode for {csv_name or '(unnamed)'}"
 
     product = lookup_product(conn, barcode)
     if product is None:
-        return None, "", [], f"barcode {barcode} not found in DB for {csv_name or '(unnamed)'}"
+        return None, "", [], [], f"barcode {barcode} not found in DB for {csv_name or '(unnamed)'}"
 
     extracted = build_extracted_nutrition(product)
 
     missing = [k for k in REQUIRED_NUTRITION_FIELDS if extracted.get(k) is None]
     if missing:
-        return None, "", [], (
+        return None, "", [], [], (
             f"missing nutrition fields for {csv_name or '(unnamed)'}: "
             + ", ".join(missing)
         )
@@ -367,23 +544,28 @@ def score_food(
     try:
         result = call_score(backend_base_url, extracted, purpose, csv_name)
     except ScoreError as e:
-        return None, "", [], f"backend error for {csv_name or '(unnamed)'}: {e}"
+        return None, "", [], [], f"backend error for {csv_name or '(unnamed)'}: {e}"
 
     score = result.get("score")
     interpretation = result.get("interpretation") or ""
-    helps = result.get("whatHelps") or []
-    if not isinstance(helps, list):
-        helps = []
-    helps = [str(h).strip() for h in helps if str(h).strip()]
+
+    def _list(key: str) -> list[str]:
+        v = result.get(key) or []
+        if not isinstance(v, list):
+            return []
+        return [str(s).strip() for s in v if str(s).strip()]
+
+    helps = _list("whatHelps")
+    hurts = _list("whatHurts")
 
     if score is None:
-        return None, interpretation, helps, f"backend returned null score for {csv_name or '(unnamed)'}"
+        return None, interpretation, helps, hurts, f"backend returned null score for {csv_name or '(unnamed)'}"
     try:
         score = int(score)
     except (TypeError, ValueError):
-        return None, interpretation, helps, f"backend score not an int for {csv_name or '(unnamed)'}: {score!r}"
+        return None, interpretation, helps, hurts, f"backend score not an int for {csv_name or '(unnamed)'}: {score!r}"
 
-    return score, interpretation, helps, None
+    return score, interpretation, helps, hurts, None
 
 
 # ---------------------------------------------------------------------------
@@ -407,6 +589,8 @@ def main() -> int:
     os.makedirs("output", exist_ok=True)
 
     results = []
+    style_variants: dict[str, int] = {}
+    POSTABILITY_THRESHOLD = 7
     for _, row in df.iterrows():
         row_dict = row.to_dict()
 
@@ -417,6 +601,7 @@ def main() -> int:
         b_barcode = clean_cell(row_dict.get("food_b_barcode"))
         framing = clean_cell(row_dict.get("framing_type"))
         purpose = clean_cell(row_dict.get("purpose")) or "snack"
+        fmt = resolve_format(row_dict)
 
         a_display, b_display, a_label, b_label = resolve_names(row_dict)
 
@@ -432,19 +617,49 @@ def main() -> int:
             "food_b_barcode": b_barcode,
             "purpose": purpose,
             "framing_type": framing,
+            "format": fmt,
         }
 
+        # Ranking format is intentionally skipped for now.
+        if fmt == "ranking":
+            results.append({
+                **base_record,
+                "food_a_score": None, "food_a_interpretation": "",
+                "food_a_what_helps": "", "food_a_what_hurts": "",
+                "food_b_score": None, "food_b_interpretation": "",
+                "food_b_what_helps": "", "food_b_what_hurts": "",
+                "score_diff": None,
+                "hook": "", "hook_style": "",
+                "content_priority": 0,
+                "postability_score": 0,
+                "verdict": "",
+                "status": "skipped",
+                "error_message": "format=ranking not implemented yet",
+            })
+            print(f"[{pair_id}] SKIPPED (ranking format)")
+            continue
+
+        # Score food_a always; score food_b only when the format needs it.
         try:
-            a_score, a_interp, a_helps, a_err = score_food(conn, backend_base_url, a_display, a_barcode, purpose)
-            b_score, b_interp, b_helps, b_err = score_food(conn, backend_base_url, b_display, b_barcode, purpose)
+            a_score, a_interp, a_helps, a_hurts, a_err = score_food(
+                conn, backend_base_url, a_display, a_barcode, purpose)
+            if fmt == "exposure":
+                b_score, b_interp, b_helps, b_hurts, b_err = (None, "", [], [], None)
+            else:
+                b_score, b_interp, b_helps, b_hurts, b_err = score_food(
+                    conn, backend_base_url, b_display, b_barcode, purpose)
         except Exception as e:  # never let one row kill the batch
             results.append({
                 **base_record,
-                "food_a_score": None, "food_a_interpretation": "", "food_a_what_helps": "",
-                "food_b_score": None, "food_b_interpretation": "", "food_b_what_helps": "",
+                "food_a_score": None, "food_a_interpretation": "",
+                "food_a_what_helps": "", "food_a_what_hurts": "",
+                "food_b_score": None, "food_b_interpretation": "",
+                "food_b_what_helps": "", "food_b_what_hurts": "",
                 "score_diff": None,
-                "hook": "",
+                "hook": "", "hook_style": "",
                 "content_priority": 0,
+                "postability_score": 0,
+                "verdict": "",
                 "status": "error",
                 "error_message": f"unexpected: {e}",
             })
@@ -453,74 +668,138 @@ def main() -> int:
 
         errors = [m for m in (a_err, b_err) if m]
         if errors:
-            hook, relation = "", ""
+            hook, relation, hook_style = "", "", ""
             score_diff = None
             priority = 0
+            postability = 0
+            verdict = ""
             status = "error"
             error_message = "; ".join(errors)
         else:
-            hook, relation = generate_hook(row_dict, a_score, b_score)
-            score_diff = a_score - b_score
-            priority = content_priority(framing, relation)
-            status = "ok"
-            error_message = ""
+            hook, relation, hook_style = generate_hook(
+                row_dict, fmt, a_score, b_score, style_variants,
+            )
+            score_diff = (a_score - b_score) if (a_score is not None and b_score is not None) else None
+            priority = content_priority(framing, relation) if relation else 0
+            halo = is_health_halo(row_dict)
+            postability = postability_score(fmt, hook, halo, a_score, b_score, relation)
+            verdict = verdict_sentence(a_display, a_score, a_helps, a_hurts)
+            if postability >= POSTABILITY_THRESHOLD:
+                status = "ok"
+                error_message = ""
+            else:
+                status = "low_postability"
+                error_message = f"postability {postability} < {POSTABILITY_THRESHOLD}"
 
         results.append({
             **base_record,
             "food_a_score": a_score, "food_a_interpretation": a_interp,
             "food_a_what_helps": " ; ".join(a_helps),
+            "food_a_what_hurts": " ; ".join(a_hurts),
             "food_b_score": b_score, "food_b_interpretation": b_interp,
             "food_b_what_helps": " ; ".join(b_helps),
+            "food_b_what_hurts": " ; ".join(b_hurts),
             "score_diff": score_diff,
             "hook": hook,
+            "hook_style": hook_style,
             "content_priority": priority,
+            "postability_score": postability,
+            "verdict": verdict,
             "status": status,
             "error_message": error_message,
         })
 
         if status == "ok":
-            tag = f"[{framing}]" if framing else ""
-            print(f"[{pair_id}] {tag} {a_display} ({a_score}) vs {b_display} ({b_score}) "
-                  f"diff={score_diff} priority={priority} — {hook}")
+            tag = f"[{fmt}]"
+            b_part = f"vs {b_display} ({b_score})" if b_score is not None else "(single)"
+            print(f"[{pair_id}] {tag} {a_display} ({a_score}) {b_part} "
+                  f"post={postability} — {hook}")
+        elif status == "low_postability":
+            print(f"[{pair_id}] FILTERED post={postability} — {hook or '(no hook)'}")
         else:
             print(f"[{pair_id}] ERROR: {error_message}")
 
     out_df = pd.DataFrame(results, columns=[
         "pair_id",
+        "format",
         "food_a_name", "food_a_display_name", "food_a_label", "food_a_barcode",
-        "food_a_score", "food_a_interpretation", "food_a_what_helps",
+        "food_a_score", "food_a_interpretation",
+        "food_a_what_helps", "food_a_what_hurts",
         "food_b_name", "food_b_display_name", "food_b_label", "food_b_barcode",
-        "food_b_score", "food_b_interpretation", "food_b_what_helps",
+        "food_b_score", "food_b_interpretation",
+        "food_b_what_helps", "food_b_what_hurts",
         "score_diff", "purpose", "framing_type",
-        "hook", "content_priority",
+        "hook", "hook_style", "content_priority",
+        "postability_score", "verdict",
         "status", "error_message",
     ])
     out_df.to_csv("output/results.csv", index=False)
 
-    # Summary
+    # Per-item blog inputs (only for status=='ok' rows that passed the filter).
+    blog_dir = "output/blog_inputs"
+    os.makedirs(blog_dir, exist_ok=True)
+    blog_written = 0
+    for r in results:
+        if r["status"] != "ok":
+            continue
+        payload = {
+            "pair_id": r["pair_id"],
+            "format": r["format"],
+            "purpose": r["purpose"],
+            "framing_type": r["framing_type"],
+            "hook": r["hook"],
+            "hook_style": r["hook_style"],
+            "verdict": r["verdict"],
+            "postability_score": r["postability_score"],
+            "food_a": {
+                "name": r["food_a_name"],
+                "display_name": r["food_a_display_name"],
+                "score": r["food_a_score"],
+                "interpretation": r["food_a_interpretation"],
+                "what_helps": [s for s in (r["food_a_what_helps"] or "").split(" ; ") if s],
+                "what_hurts": [s for s in (r["food_a_what_hurts"] or "").split(" ; ") if s],
+            },
+            "food_b": None if r["food_b_score"] is None else {
+                "name": r["food_b_name"],
+                "display_name": r["food_b_display_name"],
+                "score": r["food_b_score"],
+                "interpretation": r["food_b_interpretation"],
+                "what_helps": [s for s in (r["food_b_what_helps"] or "").split(" ; ") if s],
+                "what_hurts": [s for s in (r["food_b_what_hurts"] or "").split(" ; ") if s],
+            },
+        }
+        pid = re.sub(r"[^A-Za-z0-9]", "", str(r["pair_id"])) or "x"
+        path = os.path.join(blog_dir, f"pair_{pid.zfill(3)}.json")
+        with open(path, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        blog_written += 1
+
+    # Summary.
     total = len(results)
-    ok_count = sum(1 for r in results if r["status"] == "ok")
-    fail_count = total - ok_count
+    by_status: dict[str, int] = {}
+    for r in results:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + 1
     print()
     print("=== Summary ===")
     print(f"Total rows: {total}")
-    print(f"Successful: {ok_count}")
-    print(f"Failed:     {fail_count}")
+    for s in ("ok", "low_postability", "error", "skipped"):
+        if by_status.get(s):
+            print(f"  {s:<16} {by_status[s]}")
     print(f"Wrote {total} rows to output/results.csv")
+    print(f"Wrote {blog_written} blog input JSON file(s) to {blog_dir}/")
 
     successes = [r for r in results if r["status"] == "ok"]
-    top = sorted(successes, key=lambda r: r["content_priority"], reverse=True)[:5]
+    top = sorted(successes, key=lambda r: r["postability_score"], reverse=True)[:5]
     if top:
         print()
-        print("Top 5 by content_priority:")
+        print("Top 5 by postability_score:")
         for r in top:
             print(
-                f"  [{r['pair_id']}] priority={r['content_priority']:>3}  "
-                f"{r['food_a_display_name']} ({r['food_a_score']}) vs "
-                f"{r['food_b_display_name']} ({r['food_b_score']}) — {r['hook']}"
+                f"  [{r['pair_id']}] post={r['postability_score']:>2}  "
+                f"[{r['format']}] {r['food_a_display_name']} ({r['food_a_score']}) — {r['hook']}"
             )
 
-    # Render PNG cards for successful rows.
+    # Render PNG cards for status=='ok' rows.
     try:
         from cards import render_cards
         rendered = render_cards("output/results.csv", "output/cards")
