@@ -45,11 +45,19 @@ Default path is `./foodscore.db`. Override with the `FOOD_DB_PATH` env var.
 
 ## Configuration
 
-Two environment variables:
+Required:
+
+- `BACKEND_BASE_URL` — base URL of the SmarterEats backend, e.g.
+  `http://localhost:8000`.
+
+Optional:
 
 - `FOOD_DB_PATH` — path to the SQLite OFF DB. Default: `./foodscore.db`.
-- `BACKEND_BASE_URL` — base URL of the SmarterEats backend, e.g.
-  `http://localhost:8000`. Required.
+- `OPENAI_API_KEY` — enables markdown blog post generation. Without it,
+  `main.py` still produces results.csv, blog input JSONs, and PNG cards;
+  it just skips the blog-post step with a warning.
+- `OPENAI_MODEL` — model name passed to OpenAI chat completions.
+  Default: `gpt-4o-mini` (cost-effective).
 
 ## Input CSV
 
@@ -293,8 +301,8 @@ top 5 rows by `content_priority`.
 
 ### `output/blog_inputs/pair_{id}.json`
 
-For each `status=ok` row, a JSON file with the structured inputs needed to
-generate a blog post downstream (e.g. via OpenAI). Shape:
+For each `status=ok` row, a JSON file with the structured inputs the
+blog-post generator consumes:
 
 ```json
 {
@@ -318,8 +326,34 @@ generate a blog post downstream (e.g. via OpenAI). Shape:
 }
 ```
 
-This script does not call OpenAI — these files are inputs for a separate
-blog-generation step.
+### `output/blog_posts/pair_{id}_{slug}.md`
+
+After the JSON inputs are written, `main.py` calls
+`write_blog_posts_from_inputs()`, which (when `OPENAI_API_KEY` is set)
+asks the OpenAI chat-completions API to turn each JSON into a
+500-800-word markdown blog post.
+
+Each post:
+
+- starts with YAML frontmatter (`title`, `description`, `date`,
+  `category`, `tags`)
+- uses the headline as `# title`
+- follows the structure: intro · `## The quick verdict` · `## What hurts
+  {food_a}` · `## What helps` · `## How it compares to {food_b}` (only
+  when food_b exists) · `## Bottom line`
+- is instructed to use **only** the facts in the JSON — no invented
+  nutrition numbers, no medical claims
+
+Filenames look like
+`output/blog_posts/pair_030_swap-orange-juice-for-a-whole-orange.md`
+(slug derived from the headline).
+
+If `OPENAI_API_KEY` is absent, the run prints a warning and skips this
+step. One failed API call is logged and the rest of the batch continues.
+Card rendering is never blocked by blog generation failures.
+
+Override the model with `OPENAI_MODEL=...` if you want something other
+than the default `gpt-4o-mini`.
 
 ### `output/cards/*.png`
 

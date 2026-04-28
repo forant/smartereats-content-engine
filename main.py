@@ -12,6 +12,8 @@ import os
 import re
 import sqlite3
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -706,6 +708,177 @@ def score_food(
 
 
 # ---------------------------------------------------------------------------
+# Blog post generation (OpenAI)
+#
+# Reads each output/blog_inputs/*.json (already produced earlier in main())
+# and writes a markdown post to output/blog_posts/. The model gets ONLY the
+# JSON we built — it must not invent nutrition facts or medical claims.
+# Failures are isolated per file: one bad call can't break the run.
+# ---------------------------------------------------------------------------
+
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+
+_BLOG_SYSTEM_PROMPT = """You write food-comparison blog posts for SmarterEats.
+
+Hard rules:
+- Use ONLY the facts present in the JSON the user provides. Do not invent calories, sugar grams, ingredients, or any other nutritional detail.
+- Do not make medical claims, diagnose, or prescribe.
+- Stay food-focused and consumer-friendly.
+- Tone: clear, direct, slightly provocative. Not clinical, not preachy.
+- 500-800 words total. Markdown only.
+- Do NOT wrap your output in fences (no ```markdown). Output raw markdown.
+- Do NOT add any commentary before or after the post.
+
+Required structure:
+
+YAML frontmatter at the very top:
+---
+title: "{headline verbatim}"
+description: "{1-sentence SEO description, ≤160 chars, no quotes inside}"
+date: "{provided date YYYY-MM-DD}"
+category: "Food Comparisons"
+tags: ["nutrition", "food comparison", "SmarterEats"]
+---
+
+Then:
+# {headline verbatim}
+
+A 2-3 paragraph intro that sets up why this comparison is surprising.
+
+## The quick verdict
+State the takeaway plainly. Cite both scores in the form "{food_a} scored X/10" and "{food_b} scored Y/10". If food_b is null/missing, only cite food_a.
+
+## What hurts {food_a_display_name}
+Use food_a.what_hurts and food_a_bullets verbatim where they appear. Expand briefly but stay grounded in those bullets.
+
+## What helps
+Use food_a.what_helps if any. If food_a's score is low, do NOT overpraise it — keep this section short or skip it entirely.
+
+## How it compares to {food_b_display_name}
+Include this section ONLY if food_b is present (not null). Keep food_b as context, not the hero.
+
+## Bottom line
+A clear, slightly opinionated final recommendation. Avoid "everything in moderation" unless the data really supports it.
+"""
+
+
+def _slugify_for_blog(text: str, max_len: int = 60) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s[:max_len].rstrip("-") or "post"
+
+
+def _zfill_pair_id(pair_id) -> str:
+    digits = re.sub(r"[^0-9A-Za-z]", "", str(pair_id or "x"))
+    return digits.zfill(3) if digits.isdigit() else (digits or "x")
+
+
+def generate_blog_post_with_openai(blog_input: dict, model: str) -> str:
+    """Call the OpenAI chat-completions API to turn one structured blog
+    input into a markdown post. Raises on API errors — the caller logs
+    and continues."""
+    from openai import OpenAI  # local import so missing dep is handled gracefully
+
+    client = OpenAI()  # picks up OPENAI_API_KEY from env
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    payload = {**blog_input, "date": today}
+    user_msg = (
+        "Write the SmarterEats blog post for this comparison. "
+        "Use only the facts in the JSON below. Output markdown only.\n\n"
+        f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```"
+    )
+
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": _BLOG_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.7,
+    )
+    content = resp.choices[0].message.content or ""
+    return content.strip()
+
+
+def write_blog_posts_from_inputs(
+    blog_input_dir: str = "output/blog_inputs",
+    output_dir: str = "output/blog_posts",
+) -> int:
+    """For every JSON in `blog_input_dir`, call OpenAI and write a markdown
+    post into `output_dir`. Returns the count of successful writes.
+
+    No-ops gracefully when OPENAI_API_KEY is unset, the input directory is
+    missing, or the openai package isn't installed. One call failure does
+    not stop the rest of the batch.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("WARNING: OPENAI_API_KEY not set; skipping blog post generation.",
+              file=sys.stderr)
+        return 0
+
+    in_dir = Path(blog_input_dir)
+    if not in_dir.exists():
+        print(f"WARNING: {blog_input_dir} does not exist; nothing to generate.",
+              file=sys.stderr)
+        return 0
+
+    inputs = sorted(in_dir.glob("*.json"))
+    if not inputs:
+        print(f"No blog input JSON files in {blog_input_dir}.")
+        return 0
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    model = os.environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    print(f"\nGenerating blog posts via OpenAI (model={model}) "
+          f"for {len(inputs)} input(s)…")
+
+    written = 0
+    for json_path in inputs:
+        try:
+            with open(json_path) as f:
+                blog_input = json.load(f)
+        except Exception as e:
+            print(f"  WARNING: could not load {json_path.name}: {e}", file=sys.stderr)
+            continue
+
+        try:
+            markdown = generate_blog_post_with_openai(blog_input, model)
+        except Exception as e:
+            print(f"  WARNING: OpenAI call failed for {json_path.name}: {e}",
+                  file=sys.stderr)
+            continue
+
+        if not markdown.strip():
+            print(f"  WARNING: empty response for {json_path.name}; skipping.",
+                  file=sys.stderr)
+            continue
+
+        pair_id = blog_input.get("pair_id", "x")
+        headline = (blog_input.get("headline") or "").strip()
+        food_a_disp = (blog_input.get("food_a", {}) or {}).get("display_name") or "x"
+        food_b_disp = ((blog_input.get("food_b") or {}) or {}).get("display_name") or ""
+        slug_basis = headline or (
+            food_a_disp + (f" vs {food_b_disp}" if food_b_disp else "")
+        )
+        slug = _slugify_for_blog(slug_basis)
+        filename = f"pair_{_zfill_pair_id(pair_id)}_{slug}.md"
+        out_path = out_dir / filename
+
+        try:
+            out_path.write_text(markdown, encoding="utf-8")
+            written += 1
+            print(f"  ✓ {filename}")
+        except Exception as e:
+            print(f"  WARNING: failed to write {filename}: {e}", file=sys.stderr)
+
+    print(f"Wrote {written} blog post(s) to {output_dir}/")
+    return written
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -971,6 +1144,13 @@ def main() -> int:
         print(f"\nRendered {rendered} card PNG(s) to output/cards/")
     except Exception as e:
         print(f"\nWARNING: card rendering failed: {e}", file=sys.stderr)
+
+    # Generate markdown blog posts from the blog_inputs JSON via OpenAI.
+    # No-ops when OPENAI_API_KEY is unset; never blocks card rendering.
+    try:
+        write_blog_posts_from_inputs(blog_dir, "output/blog_posts")
+    except Exception as e:
+        print(f"\nWARNING: blog post generation failed: {e}", file=sys.stderr)
 
     return 0
 
