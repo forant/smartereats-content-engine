@@ -1,0 +1,21 @@
+pair_id,food_a_name,food_a_barcode,food_b_name,food_b_barcode,purpose,angle
+1,Clif Bar Chocolate Chip,0002225210090,Snickers Bar,0040000001058,snack,energy
+2,Coca-Cola Classic,0088009900767,Naked Juice Green Machine,,snack,beverage
+3,Chobani Flip S'mores,,Snickers Bar,0040000001058,snack,dessert
+4,Pop Tarts Frosted Strawberry,0002544317101,Coconut Chocolate Chip Energy,0722252160300,,
+5,Green Machine Smoothie Juice,0082592631060,Snickers,0040000002635,,
+6,Fruifuls,0034856005216,Snickers,0040000002635,,
+7,Special K classic,5059319021188,Frosted Flakes,0038000181771,,
+8,Ensure Vanilla Flavour 200G,8904145911363,Mccafe Vanilla Shake Medium,40971507437802411763907,,
+9,Apple Cinnamon Breakfast Protein,0602652651847,Krispy Kreme Doughnuts,0072470006028,,
+10,Chewy Granola,49222548,Butterfinger Bar,0099900001477,,
+11,Green And Honey Tea,8718612001071,Coca Cola,5449000000453,,
+12,Gogurt,0070470187419,Snickers,0040000002635,,
+13,Cheezits,2011696440702,Pringles,0038000007019,,
+14,Orange,5449000243416,Coca Cola,5449000000453,,
+15,Vanilla Almondmilk Alternative Yogurt,0025293004580,Coca Cola,5449000000453,,
+16,Activia,0056800250473,Coca Cola,5449000000453,,
+17,Honey Nut,0016000124950,Special k,0038000208553,,
+18,Fruit Nut Medley Wildly Delicious Granola,0856416000017,Butterfinger,0062020100627,,
+19,Cherry Pie,0021908509242,Snickers,0040000002635,,
+20,White Cheddar Popcorn,0028400421393,Cheetos,7501011143968,,
