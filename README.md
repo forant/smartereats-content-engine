@@ -194,6 +194,27 @@ export FOOD_DB_PATH="/Users/stellar87/Developer/foodscore/backend/off_products.d
 python main.py
 ```
 
+## Building input.csv (helper UI)
+
+`input_builder.py` is a local Streamlit app that searches the OFF database
+and appends clean rows to `input.csv` — no backend calls, no scoring, no
+rendering. One-time setup:
+
+```
+pip install -r requirements-builder.txt
+```
+
+Then run from the project root:
+
+```
+streamlit run input_builder.py
+```
+
+Pick `format`, `framing_type`, `purpose`, search OFF for each food, edit
+the display name and label, preview the row, click **Append to input.csv**.
+The `pair_id` auto-increments. The current `input.csv` is shown as a table
+at the bottom with a download button.
+
 ## Output
 
 ### `output/results.csv`

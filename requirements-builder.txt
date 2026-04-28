@@ -1,0 +1,3 @@
+# Optional deps used only by input_builder.py (the Streamlit UI).
+# Install with: pip install -r requirements-builder.txt
+streamlit
