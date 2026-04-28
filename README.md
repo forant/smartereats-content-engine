@@ -150,16 +150,16 @@ always renders the same headline across runs.
 
 ### Future: OpenAI
 
-Generation is split into:
+Both the headline and the punchy bullets are split the same way:
 
-- `generate_headline_deterministic(row, fmt, score_a, score_b, halo)`
+- `generate_headline_deterministic(...)` / `punch_up_bullets_deterministic(...)`
   — what's wired up today.
-- `generate_headline_with_openai(...)` — placeholder, raises
-  `NotImplementedError`. Same signature so the dispatcher can swap it
-  in without touching callers.
-- `generate_headline(...)` — the dispatcher. Currently always calls the
-  deterministic generator. To turn on OpenAI later, change one line in
-  the dispatcher.
+- `generate_headline_with_openai(...)` / `punch_up_bullets_with_openai(...)`
+  — placeholders that raise `NotImplementedError`. Same signatures so
+  the dispatchers can swap them in without touching callers.
+- `generate_headline(...)` / `punch_up_bullets(...)` — the dispatchers.
+  Currently always call the deterministic versions. To turn on OpenAI,
+  flip one line in each dispatcher.
 
 ## Postability filter
 
@@ -309,12 +309,17 @@ Card layout (light gray canvas, centered white container with soft shadow):
 - **food_b reference strip** below the hero — small, gray, single line:
   `vs.  {display_name}     {score} / 10`. Never highlighted as a winner
   and never carries a "better choice" pill.
-- **Up to 2 bullets describing food_a only**:
-  - food_a score `≥ 5` → green-dot bullets from `food_a_what_helps`
-  - food_a score `< 5` → red-dot bullets from `food_a_what_hurts`
-  - `food_b_what_helps` is intentionally never shown
-  - copy is cleaned (`"competitor"` clauses stripped, first letter
-    capitalized)
+- **Up to 2 punchy bullets** transformed from the backend's
+  `whatHelps` / `whatHurts` by [bullets.py](bullets.py):
+  - `swap` format → green-dot bullets from food_b's helps (this is the
+    one place food_b is praised — that's the point of `swap`)
+  - `headlineMode == shock` (close-call comparisons) → muted-gray
+    "neutral" bullets that emphasize sameness (`Same sugar problem`,
+    `No real upgrade`)
+  - food_a score `≥ 7` → green-dot "pick" bullets from food_a's helps
+  - otherwise → red-dot "avoid" bullets from food_a's hurts
+  - all bullets are ≤ 6 words, single phrase, no hedging language;
+    minor vitamins / vague benefits are dropped per spec
 - **Logo footer** — `assets/logo.png` at 80px height, centered. Falls back
   to bold `SmarterEats` text if the file is absent.
 

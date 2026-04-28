@@ -874,12 +874,37 @@ def main() -> int:
     out_df.to_csv("output/results.csv", index=False)
 
     # Per-item blog inputs (only for status=='ok' rows that passed the filter).
+    from bullets import punch_up_bullets, split_raw_bullets
+
     blog_dir = "output/blog_inputs"
     os.makedirs(blog_dir, exist_ok=True)
     blog_written = 0
     for r in results:
         if r["status"] != "ok":
             continue
+
+        a_helps_raw = split_raw_bullets(r["food_a_what_helps"] or "")
+        a_hurts_raw = split_raw_bullets(r["food_a_what_hurts"] or "")
+        b_helps_raw = split_raw_bullets(r["food_b_what_helps"] or "")
+        b_hurts_raw = split_raw_bullets(r["food_b_what_hurts"] or "")
+
+        # Punchy bullets the card uses, exposed for downstream blog synth.
+        a_score = r["food_a_score"]
+        a_role = "pick" if (isinstance(a_score, int) and a_score >= 7) else "avoid"
+        food_a_bullets = punch_up_bullets(
+            a_helps_raw if a_role == "pick" else a_hurts_raw,
+            a_role,
+        )
+
+        b_score = r["food_b_score"]
+        food_b_bullets: list[str] = []
+        if b_score is not None:
+            b_role = "pick" if (isinstance(b_score, int) and b_score >= 7) else "avoid"
+            food_b_bullets = punch_up_bullets(
+                b_helps_raw if b_role == "pick" else b_hurts_raw,
+                b_role,
+            )
+
         payload = {
             "pair_id": r["pair_id"],
             "format": r["format"],
@@ -889,21 +914,23 @@ def main() -> int:
             "headlineMode": r["headlineMode"],
             "verdict": r["verdict"],
             "postability_score": r["postability_score"],
+            "food_a_bullets": food_a_bullets,
+            "food_b_bullets": food_b_bullets,
             "food_a": {
                 "name": r["food_a_name"],
                 "display_name": r["food_a_display_name"],
                 "score": r["food_a_score"],
                 "interpretation": r["food_a_interpretation"],
-                "what_helps": [s for s in (r["food_a_what_helps"] or "").split(" ; ") if s],
-                "what_hurts": [s for s in (r["food_a_what_hurts"] or "").split(" ; ") if s],
+                "what_helps": a_helps_raw,
+                "what_hurts": a_hurts_raw,
             },
             "food_b": None if r["food_b_score"] is None else {
                 "name": r["food_b_name"],
                 "display_name": r["food_b_display_name"],
                 "score": r["food_b_score"],
                 "interpretation": r["food_b_interpretation"],
-                "what_helps": [s for s in (r["food_b_what_helps"] or "").split(" ; ") if s],
-                "what_hurts": [s for s in (r["food_b_what_hurts"] or "").split(" ; ") if s],
+                "what_helps": b_helps_raw,
+                "what_hurts": b_hurts_raw,
             },
         }
         pid = re.sub(r"[^A-Za-z0-9]", "", str(r["pair_id"])) or "x"

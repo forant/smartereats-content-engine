@@ -28,6 +28,8 @@ from typing import Optional
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from bullets import punch_up_bullets, split_raw_bullets
+
 
 # --- Canvas / container -----------------------------------------------------
 
@@ -758,6 +760,7 @@ def render_card(row: dict) -> Image.Image:
     draw = _draw_container(canvas)
 
     fmt = (row.get("format") or "comparison").strip().lower() or "comparison"
+    headline_mode = (row.get("headlineMode") or "").strip().lower()
     # Accept either the new `headline` column or the legacy `hook` column.
     headline = (row.get("headline") or row.get("hook") or "").strip()
     purpose = (row.get("purpose") or "").strip()
@@ -767,20 +770,16 @@ def render_card(row: dict) -> Image.Image:
     a_score = _to_int(row.get("food_a_score"))
     b_score = _to_int(row.get("food_b_score"))
 
-    a_helps = _split_helps(row.get("food_a_what_helps") or "")
-    a_hurts = _split_helps(row.get("food_a_what_hurts") or "")
-    b_helps = _split_helps(row.get("food_b_what_helps") or "")
+    a_helps = split_raw_bullets(row.get("food_a_what_helps") or "")
+    a_hurts = split_raw_bullets(row.get("food_a_what_hurts") or "")
+    b_helps = split_raw_bullets(row.get("food_b_what_helps") or "")
+    b_hurts = split_raw_bullets(row.get("food_b_what_hurts") or "")
 
     _draw_pill(canvas, draw, _category_pill_label(fmt, framing, purpose))
     _draw_headline(draw, headline)
 
     if fmt == "exposure":
         _draw_hero_card(canvas, draw, a_display, a_score)
-        # Exposure bullets: lead with what's wrong with food_a.
-        if a_score is not None and a_score < 7 and a_hurts:
-            bullets, dot_color = a_hurts, DANGER_RED
-        else:
-            bullets, dot_color = a_helps, ACCENT_GREEN
     elif fmt == "swap":
         # food_a is what you should swap OUT; food_b is what to PICK.
         a_x = SIDE_PAD
@@ -788,17 +787,38 @@ def render_card(row: dict) -> Image.Image:
         _draw_swap_card(canvas, draw, a_x, a_display, a_score, role="avoid")
         _draw_swap_card(canvas, draw, b_x, b_display, b_score, role="pick")
         _draw_swap_arrow(draw)
-        bullets, dot_color = b_helps, ACCENT_GREEN
     else:  # comparison (default)
         a_x = SIDE_PAD
         b_x = SIDE_PAD + CARD_W_INNER + CARD_GAP
         _draw_comparison_card(canvas, draw, a_x, a_display, a_score, is_subject=True)
         _draw_comparison_card(canvas, draw, b_x, b_display, b_score, is_subject=False)
-        # Bullets describe food_a's reality. Never mix in food_b's helps.
-        if a_score is not None and a_score < 5:
-            bullets, dot_color = a_hurts, DANGER_RED
-        else:
-            bullets, dot_color = a_helps, ACCENT_GREEN
+
+    # Bullet role is driven by card meaning, not the food-a score alone:
+    #   swap                  → reinforce the recommendation (food_b helps, "pick")
+    #   close-call (shock)    → emphasize sameness (neutral)
+    #   food_a >= 7           → "pick" off food_a helps
+    #   otherwise             → "avoid" off food_a hurts
+    # Then the punchy transformer enforces the ≤6-word, no-hedging rules.
+    if fmt == "swap":
+        bullet_role = "pick"
+        raw_bullets = b_helps
+    elif headline_mode == "shock":
+        bullet_role = "neutral"
+        raw_bullets = a_hurts + b_hurts  # used for theme detection only
+    elif a_score is not None and a_score >= 7:
+        bullet_role = "pick"
+        raw_bullets = a_helps
+    else:
+        bullet_role = "avoid"
+        raw_bullets = a_hurts
+
+    bullets = punch_up_bullets(raw_bullets, bullet_role, max_bullets=2)
+    if bullet_role == "pick":
+        dot_color = ACCENT_GREEN
+    elif bullet_role == "avoid":
+        dot_color = DANGER_RED
+    else:
+        dot_color = MUTED
 
     _draw_bullets(draw, bullets, dot_color)
     _draw_footer(canvas, draw)
