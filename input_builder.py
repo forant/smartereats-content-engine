@@ -622,6 +622,25 @@ def _update_discovery_status(discovery_id: str, status: str) -> bool:
     return True
 
 
+# Callbacks for the cleaner-mode clear buttons. Mutating widget-bound
+# session_state keys must happen in an on_click callback (which runs before
+# widgets re-instantiate on the next rerun) — doing it inline raises a
+# StreamlitAPIException.
+def _clear_discovery_reviewed() -> None:
+    df = _load_discoveries()
+    kept = df[df.get("status", "") == "pending"] if "status" in df.columns else df
+    kept.to_csv(DISCOVERY_CSV, index=False)
+    st.session_state.pop("clear_queue_confirm", None)
+    st.session_state["cleaner_idx"] = 0
+
+
+def _clear_discovery_all() -> None:
+    df = _load_discoveries()
+    df.iloc[0:0].to_csv(DISCOVERY_CSV, index=False)
+    st.session_state.pop("clear_queue_confirm", None)
+    st.session_state["cleaner_idx"] = 0
+
+
 def render_cleaner_mode() -> None:
     df = _load_discoveries()
     if df.empty:
@@ -642,6 +661,38 @@ def render_cleaner_mode() -> None:
     sc2.metric("Pending", pending_n)
     sc3.metric("Approved", approved_n)
     sc4.metric("Skipped", skipped_n)
+
+    reviewed_n = approved_n + skipped_n
+    if total > 0:
+        with st.expander(f"Clear discovery queue ({total} rows)"):
+            st.caption(
+                "Pending = rows you haven't approved or explicitly skipped — "
+                "clicking '◀ Previous / Next ▶' alone leaves a row pending. "
+                "Cleared rows are NOT re-discovered next run — that's tracked "
+                "separately in `output/considered_pairs.csv`, which these "
+                "buttons do not touch."
+            )
+            confirm = st.checkbox(
+                "I confirm clearing rows from the queue",
+                key="clear_queue_confirm",
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                st.button(
+                    f"Clear reviewed ({reviewed_n})",
+                    disabled=(not confirm) or reviewed_n == 0,
+                    key="clear_reviewed_btn",
+                    on_click=_clear_discovery_reviewed,
+                    help="Drops approved + skipped rows. Pending rows stay.",
+                )
+            with c2:
+                st.button(
+                    f"Clear ALL ({total})",
+                    disabled=not confirm,
+                    key="clear_all_btn",
+                    on_click=_clear_discovery_all,
+                    help="Drops every row in the queue, including pending.",
+                )
 
     pending = df[df.get("status", "") == "pending"].copy()
     if pending.empty:
@@ -913,9 +964,22 @@ if df_show.empty:
     st.caption("No rows yet — the file will be created on first save.")
 else:
     st.dataframe(df_show, use_container_width=True)
-    st.download_button(
-        "Download input.csv",
-        data=df_show.to_csv(index=False).encode("utf-8"),
-        file_name="input.csv",
-        mime="text/csv",
-    )
+    dl_col, clr_col = st.columns([1, 2])
+    with dl_col:
+        st.download_button(
+            "Download input.csv",
+            data=df_show.to_csv(index=False).encode("utf-8"),
+            file_name="input.csv",
+            mime="text/csv",
+        )
+    with clr_col:
+        confirm = st.checkbox(
+            f"Confirm clear ({len(df_show)} rows)", key="clear_confirm",
+        )
+        if st.button("Clear input.csv", disabled=not confirm,
+                     help="Wipes input.csv to header-only. Cannot be undone — "
+                          "main.py's results.csv will keep prior runs."):
+            pd.DataFrame(columns=CSV_HEADER).to_csv(INPUT_CSV, index=False)
+            st.session_state["clear_confirm"] = False
+            st.success("input.csv cleared.")
+            st.rerun()

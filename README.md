@@ -326,31 +326,43 @@ blog-post generator consumes:
 }
 ```
 
-### `output/blog_posts/pair_{id}_{slug}.md`
+### `output/blog_posts/<slug>.mdx`
 
 After the JSON inputs are written, `main.py` calls
 `write_blog_posts_from_inputs()`, which (when `OPENAI_API_KEY` is set)
 asks the OpenAI chat-completions API to turn each JSON into a
-500-800-word markdown blog post.
+350-500-word markdown blog post staged as `.mdx` for direct copy into
+the website's `content/blog/`.
 
 Each post:
 
-- starts with YAML frontmatter (`title`, `description`, `date`,
-  `category`, `tags`)
-- uses the headline as `# title`
-- follows the structure: intro · `## The quick verdict` · `## What hurts
-  {food_a}` · `## What helps` · `## How it compares to {food_b}` (only
-  when food_b exists) · `## Bottom line`
+- starts with YAML frontmatter — exactly three fields: `title`,
+  `description`, `date` (no `category`, `tags`, `slug`, `image`, or
+  `draft`)
+- uses an SEO title of the form `Is {Food A} Healthy?` (with an optional
+  `(Food A vs Food B)` parenthetical for comparison/swap), repeated as
+  `# title` in the body
+- follows the structure: intro (1-2 paragraphs) · `**Short answer:**`
+  one-liner · `## The quick verdict` · `## What hurts {food_a}` ·
+  `## Why the comparison matters` · `## Bottom line`
+- includes at least one numeric callout (sugar grams, calories, sodium,
+  fiber, or score) pulled verbatim from the JSON — never invented
 - is instructed to use **only** the facts in the JSON — no invented
   nutrition numbers, no medical claims
+- ends with a deterministic `## Related` section (2-3 plain-text titles
+  of other posts in the same run, appended in Python after the model
+  call). Skipped automatically when fewer than 2 other posts exist.
 
-Filenames look like
-`output/blog_posts/pair_030_swap-orange-juice-for-a-whole-orange.md`
-(slug derived from the headline).
+Filenames are the URL slug:
+`output/blog_posts/is-gatorade-healthy-vs-coca-cola.mdx` (or
+`is-nutella-healthy.mdx` for exposure-format posts). The slug is
+deterministic from the food display names, not from the headline.
 
 If `OPENAI_API_KEY` is absent, the run prints a warning and skips this
 step. One failed API call is logged and the rest of the batch continues.
-Card rendering is never blocked by blog generation failures.
+Card rendering is never blocked by blog generation failures. By default
+posts whose `<slug>.mdx` already exists are skipped — pass `--force` to
+regenerate everything.
 
 Override the model with `OPENAI_MODEL=...` if you want something other
 than the default `gpt-4o-mini`.

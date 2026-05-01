@@ -7,6 +7,7 @@ endpoint for each, and writes a results CSV with deterministic hooks.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -725,40 +726,57 @@ Hard rules:
 - Do not make medical claims, diagnose, or prescribe.
 - Stay food-focused and consumer-friendly.
 - Tone: clear, direct, slightly provocative. Not clinical, not preachy.
-- 500-800 words total. Markdown only.
+- 350-500 words total. Markdown only.
 - Do NOT wrap your output in fences (no ```markdown). Output raw markdown.
 - Do NOT add any commentary before or after the post.
 
+Editorial stance — depends on the JSON's `format` field:
+
+- format == "comparison": food_a is ALWAYS the subject of the post. food_b is ONLY a baseline reference — a yardstick for exposing food_a. Do NOT recommend food_b. Do NOT describe food_b as "the better choice," do NOT suggest readers pick it instead, do NOT frame the post as "which should I choose?". The post answers ONE question: what does this reveal about food_a?
+- format == "swap": food_b IS the explicit alternative — recommend it plainly. food_a is what the reader should swap OUT.
+- format == "exposure": food_a only (food_b is null). Surface the gap between how food_a is marketed and what's actually in it.
+
+Forbidden closers in any format: "both are fine," "everything in moderation," "it depends on your goals," "context matters," or any similar punt that avoids taking a stance. Take a stance.
+
 Required structure:
 
-YAML frontmatter at the very top:
+YAML frontmatter at the very top — exactly these three fields, no others (no category, no tags, no slug, no image, no draft):
 ---
-title: "{headline verbatim}"
-description: "{1-sentence SEO description, ≤160 chars, no quotes inside}"
+title: "{the title is provided in the user message — use it verbatim, including the parenthetical comparison if present}"
+description: "{1-sentence SEO blurb, ≤160 chars, no quotes inside}"
 date: "{provided date YYYY-MM-DD}"
-category: "Food Comparisons"
-tags: ["nutrition", "food comparison", "SmarterEats"]
 ---
 
-Then:
-# {headline verbatim}
+Description rules:
+- Exactly one sentence.
+- Must include the phrase "is {food_a_display_name} healthy" or a close natural variant (e.g. "Is Gatorade actually healthy?").
+- Slightly curiosity-driven — hint at a surprising or counterintuitive answer.
+- If food_b is present, hint at the comparison (e.g. "...this comparison with soda tells a different story").
 
-A 2-3 paragraph intro that sets up why this comparison is surprising.
+Then, the body H1 — use the EXACT same title string as the frontmatter:
+# {title verbatim}
+
+A tight 1-2 paragraph intro (not 3) that sets up what's surprising about food_a. For comparison: do not frame the intro as a choice between the two — frame it around food_a's halo, marketing, or hidden tradeoff.
+
+Immediately after the intro, on its own line, output a single sentence beginning with the literal bold marker `**Short answer:**`. This is a direct, unhedged answer to the title's "Is X healthy?" question — your editorial verdict on food_a in one line. Example shape: `**Short answer:** Not really — Gatorade's sugar load looks more like soda than a sports drink.`
+
+Numeric callout (REQUIRED): at least one section below must surface a concrete number from the provided JSON — sugar grams, calories, sodium mg, fiber grams, or a score out of 10. Pull it verbatim from food_a / food_b / their bullets. Do NOT invent numbers.
 
 ## The quick verdict
-State the takeaway plainly. Cite both scores in the form "{food_a} scored X/10" and "{food_b} scored Y/10". If food_b is null/missing, only cite food_a.
+State the takeaway about food_a plainly. Cite "{food_a} scored X/10". For comparison and swap, also cite "{food_b} scored Y/10" as a reference point. If food_b is null/missing, only cite food_a.
 
 ## What hurts {food_a_display_name}
 Use food_a.what_hurts and food_a_bullets verbatim where they appear. Expand briefly but stay grounded in those bullets.
 
-## What helps
-Use food_a.what_helps if any. If food_a's score is low, do NOT overpraise it — keep this section short or skip it entirely.
-
-## How it compares to {food_b_display_name}
-Include this section ONLY if food_b is present (not null). Keep food_b as context, not the hero.
+## Why the comparison matters
+- comparison: explain what food_b's score reveals about food_a — food_b is a yardstick, not a recommendation. Do NOT pivot into a food_b recommendation. food_a stays the subject.
+- swap: name food_b as the better pick and say why, briefly.
+- exposure (food_b is null): re-frame this section as why food_a's marketing claim doesn't hold up against its actual numbers, OR omit it entirely if the post reads cleaner without it.
 
 ## Bottom line
-A clear, slightly opinionated final recommendation. Avoid "everything in moderation" unless the data really supports it.
+- comparison: a sharp, opinionated takeaway about food_a — what this reveals, who shouldn't bother with it, or when it's actually fine. Do NOT recommend food_b. Do NOT use "everything in moderation," "both are fine," or any forbidden closer listed above.
+- swap: name food_b as the better choice for this purpose.
+- exposure: name what's misleading or hidden about food_a.
 """
 
 
@@ -767,23 +785,129 @@ def _slugify_for_blog(text: str, max_len: int = 60) -> str:
     return s[:max_len].rstrip("-") or "post"
 
 
-def _zfill_pair_id(pair_id) -> str:
-    digits = re.sub(r"[^0-9A-Za-z]", "", str(pair_id or "x"))
-    return digits.zfill(3) if digits.isdigit() else (digits or "x")
+def _smart_title_case_word(w: str) -> str:
+    """Capitalize the first char and any char after a hyphen. Preserves
+    apostrophes/ampersands and existing inner caps (e.g. 'M&M's' stays
+    'M&M's', 'coca-cola' becomes 'Coca-Cola')."""
+    if not w:
+        return w
+    out = [w[0].upper()]
+    for i in range(1, len(w)):
+        if w[i - 1] == "-" and w[i].isalpha():
+            out.append(w[i].upper())
+        else:
+            out.append(w[i])
+    return "".join(out)
 
 
-def generate_blog_post_with_openai(blog_input: dict, model: str) -> str:
+def _smart_title_case(s: str) -> str:
+    return " ".join(_smart_title_case_word(w) for w in (s or "").split())
+
+
+def _seo_title(food_a_display: str, food_b_display: str) -> str:
+    """SEO title: 'Is X Healthy?' with an optional '(X vs Y)' tail when a
+    distinct food_b is provided."""
+    a = (food_a_display or "").strip() or "This Product"
+    a_tc = _smart_title_case(a)
+    b = (food_b_display or "").strip()
+    if b and b.lower() != a.lower():
+        return f"Is {a_tc} Healthy? ({a_tc} vs {_smart_title_case(b)})"
+    return f"Is {a_tc} Healthy?"
+
+
+def _seo_slug(food_a_display: str, food_b_display: str) -> str:
+    """URL slug. Comparison/swap include food_b so two posts comparing the
+    same food_a against different food_b's get distinct filenames; exposure
+    posts get the short 'is-X-healthy' form."""
+    a = (food_a_display or "").strip() or "this product"
+    b = (food_b_display or "").strip()
+    if b and b.lower() != a.lower():
+        return _slugify_for_blog(f"is {a} healthy vs {b}")
+    return _slugify_for_blog(f"is {a} healthy")
+
+
+def _extract_frontmatter_title(path: Path) -> Optional[str]:
+    """Read the `title:` value from a `.mdx` file's YAML frontmatter.
+    Returns None when the file is unreadable or has no title."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+    if not m:
+        return None
+    tm = re.search(r"^title:\s*(.+?)\s*$", m.group(1), re.MULTILINE)
+    if not tm:
+        return None
+    title = tm.group(1).strip()
+    if len(title) >= 2 and title[0] == title[-1] and title[0] in ('"', "'"):
+        title = title[1:-1]
+    return title
+
+
+def load_published_blog_index(website_blog_dir: Optional[str]) -> dict[str, str]:
+    """Build {slug → title} from `.mdx` files already published to the
+    website's content/blog/ directory. Used as the candidate pool for the
+    Related section so links never point to unpublished (404) posts.
+
+    Returns an empty dict — and prints a warning — when the env var is
+    unset, the path is missing, or the path isn't a directory. Never raises."""
+    if not website_blog_dir:
+        print("WARNING: WEBSITE_BLOG_DIR is not set; staged posts will be "
+              "written without a Related section.", file=sys.stderr)
+        return {}
+    p = Path(website_blog_dir)
+    if not p.exists() or not p.is_dir():
+        print(f"WARNING: WEBSITE_BLOG_DIR={website_blog_dir!r} is not a "
+              "directory; staged posts will be written without a Related "
+              "section.", file=sys.stderr)
+        return {}
+    index: dict[str, str] = {}
+    for mdx in p.glob("*.mdx"):
+        title = _extract_frontmatter_title(mdx) or mdx.stem
+        index[mdx.stem] = title
+    return index
+
+
+def _build_related_links(
+    published_index: dict[str, str],
+    current_slug: str,
+    rotation_idx: int,
+    n: int = 3,
+) -> list[str]:
+    """Return up to `n` `- [Title](/blog/slug)` lines drawn from
+    `published_index`, excluding `current_slug`. Rotates by `rotation_idx`
+    so each post cites a different slice. Returns [] if fewer than 2
+    other published posts exist (per spec)."""
+    candidates = sorted(
+        (s, t) for s, t in published_index.items() if s != current_slug
+    )
+    if len(candidates) < 2:
+        return []
+    total = len(candidates)
+    start = rotation_idx % total
+    out: list[str] = []
+    for i in range(min(n, total)):
+        slug, title = candidates[(start + i) % total]
+        out.append(f"- [{title}](/blog/{slug})")
+    return out
+
+
+def generate_blog_post_with_openai(blog_input: dict, title: str, model: str) -> str:
     """Call the OpenAI chat-completions API to turn one structured blog
     input into a markdown post. Raises on API errors — the caller logs
-    and continues."""
+    and continues. `title` is computed deterministically by the caller
+    and must appear verbatim in both the frontmatter and the body H1."""
     from openai import OpenAI  # local import so missing dep is handled gracefully
 
     client = OpenAI()  # picks up OPENAI_API_KEY from env
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    payload = {**blog_input, "date": today}
+    payload = {**blog_input, "date": today, "title": title}
     user_msg = (
-        "Write the SmarterEats blog post for this comparison. "
+        f"Write the SmarterEats blog post for this comparison.\n\n"
+        f"Use this exact title in BOTH the frontmatter `title:` and the body H1 `#`:\n"
+        f"  {title}\n\n"
         "Use only the facts in the JSON below. Output markdown only.\n\n"
         f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```"
     )
@@ -803,13 +927,22 @@ def generate_blog_post_with_openai(blog_input: dict, model: str) -> str:
 def write_blog_posts_from_inputs(
     blog_input_dir: str = "output/blog_inputs",
     output_dir: str = "output/blog_posts",
+    force: bool = False,
 ) -> int:
-    """For every JSON in `blog_input_dir`, call OpenAI and write a markdown
+    """For every JSON in `blog_input_dir`, call OpenAI and write a `.mdx`
     post into `output_dir`. Returns the count of successful writes.
+
+    Output filenames are `<slug>.mdx` (slug derived from headline) so the
+    staged file can be copied directly into the website's content/blog/
+    directory — the slug is also the URL.
 
     No-ops gracefully when OPENAI_API_KEY is unset, the input directory is
     missing, or the openai package isn't installed. One call failure does
     not stop the rest of the batch.
+
+    When `force=False` (default), an input whose `<slug>.mdx` already exists
+    is skipped — re-runs don't re-spend OpenAI tokens on posts already
+    generated.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -835,7 +968,9 @@ def write_blog_posts_from_inputs(
     print(f"\nGenerating blog posts via OpenAI (model={model}) "
           f"for {len(inputs)} input(s)…")
 
-    written = 0
+    # Phase 1: load all inputs and pre-compute titles + paths so the
+    # related-links logic can pull from the full set in this run.
+    plan: list[tuple[Path, str, Path, dict]] = []
     for json_path in inputs:
         try:
             with open(json_path) as f:
@@ -843,9 +978,30 @@ def write_blog_posts_from_inputs(
         except Exception as e:
             print(f"  WARNING: could not load {json_path.name}: {e}", file=sys.stderr)
             continue
+        food_a_disp = ((blog_input.get("food_a") or {}).get("display_name") or "").strip()
+        food_b_disp = ((blog_input.get("food_b") or {}).get("display_name") or "").strip() \
+            if blog_input.get("food_b") else ""
+        title = _seo_title(food_a_disp, food_b_disp)
+        slug = _seo_slug(food_a_disp, food_b_disp)
+        out_path = out_dir / f"{slug}.mdx"
+        plan.append((json_path, title, out_path, blog_input))
+
+    # Related-section candidates come exclusively from the live website's
+    # content/blog/ directory so links never point at staged-but-unpublished
+    # posts that would 404. When WEBSITE_BLOG_DIR is unset/invalid, the
+    # index is empty and the Related section is skipped entirely.
+    published_index = load_published_blog_index(os.environ.get("WEBSITE_BLOG_DIR"))
+
+    # Phase 2: generate, skipping ones that already exist unless forced.
+    written = 0
+    skipped = 0
+    for idx, (json_path, title, out_path, blog_input) in enumerate(plan):
+        if not force and out_path.exists():
+            skipped += 1
+            continue
 
         try:
-            markdown = generate_blog_post_with_openai(blog_input, model)
+            markdown = generate_blog_post_with_openai(blog_input, title, model)
         except Exception as e:
             print(f"  WARNING: OpenAI call failed for {json_path.name}: {e}",
                   file=sys.stderr)
@@ -856,33 +1012,207 @@ def write_blog_posts_from_inputs(
                   file=sys.stderr)
             continue
 
-        pair_id = blog_input.get("pair_id", "x")
-        headline = (blog_input.get("headline") or "").strip()
-        food_a_disp = (blog_input.get("food_a", {}) or {}).get("display_name") or "x"
-        food_b_disp = ((blog_input.get("food_b") or {}) or {}).get("display_name") or ""
-        slug_basis = headline or (
-            food_a_disp + (f" vs {food_b_disp}" if food_b_disp else "")
+        # Related section: links to posts already published in
+        # WEBSITE_BLOG_DIR, excluding the post we're generating. Empty
+        # `published_index` (no env var, missing dir) → section is skipped.
+        related_lines = _build_related_links(
+            published_index, out_path.stem, idx, n=3,
         )
-        slug = _slugify_for_blog(slug_basis)
-        filename = f"pair_{_zfill_pair_id(pair_id)}_{slug}.md"
-        out_path = out_dir / filename
+        if related_lines:
+            markdown = (
+                markdown.rstrip()
+                + "\n\n## Related\n\n"
+                + "\n".join(related_lines)
+                + "\n"
+            )
 
         try:
             out_path.write_text(markdown, encoding="utf-8")
             written += 1
-            print(f"  ✓ {filename}")
+            print(f"  ✓ {out_path.name}")
         except Exception as e:
-            print(f"  WARNING: failed to write {filename}: {e}", file=sys.stderr)
+            print(f"  WARNING: failed to write {out_path.name}: {e}", file=sys.stderr)
 
+    if skipped:
+        print(f"Skipped {skipped} blog post(s) already present in {output_dir}/ "
+              f"(use --force to regenerate)")
     print(f"Wrote {written} blog post(s) to {output_dir}/")
     return written
+
+
+# ---------------------------------------------------------------------------
+# Result cache (skip already-processed rows on re-runs)
+# ---------------------------------------------------------------------------
+
+# Fields whose values, taken together, determine a result. If any of these
+# differ between input.csv and the cached output, treat it as a cache miss
+# and re-score so edits to a row aren't silently ignored.
+_CACHE_KEY_FIELDS = (
+    "pair_id", "food_a_barcode", "food_b_barcode",
+    "framing_type", "format", "purpose",
+)
+
+
+def _result_cache_key(rec: dict) -> tuple:
+    return tuple(clean_cell(rec.get(k)) for k in _CACHE_KEY_FIELDS)
+
+
+def _coerce_cached_record(rec: dict) -> dict:
+    """pd.read_csv with dtype=str returns everything as string. Restore None
+    / int for numeric fields so downstream code (blog_inputs, summary)
+    works on cached rows exactly like a freshly computed dict."""
+    out = dict(rec)
+    int_fields = ("food_a_score", "food_b_score", "score_diff",
+                  "content_priority", "postability_score")
+    for k in int_fields:
+        v = out.get(k, "")
+        if v in ("", "None", None):
+            out[k] = None
+            continue
+        try:
+            out[k] = int(float(v))
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+def load_completed_cache(path: str) -> dict[tuple, dict]:
+    """Build {key → record} from a prior output/results.csv. Error rows are
+    excluded — those live in the sidecar `result_errors.csv` so they're
+    purged from results.csv but still suppress retries."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        df = pd.read_csv(p, dtype=str, keep_default_na=False)
+    except Exception as e:
+        print(f"WARN: could not read {path} for caching: {e}", file=sys.stderr)
+        return {}
+    cache: dict[tuple, dict] = {}
+    for _, r in df.iterrows():
+        rec = r.to_dict()
+        if (rec.get("status") or "").strip() == "error":
+            continue
+        cache[_result_cache_key(rec)] = _coerce_cached_record(rec)
+    return cache
+
+
+# ---------------------------------------------------------------------------
+# Error sidecar: keeps results.csv free of error rows while still preventing
+# retries on the next run. An entry stays in the sidecar as long as its
+# key fields (pair_id + barcodes + framing + format + purpose) appear in
+# input.csv. Edit any of those → cache miss → row is re-scored.
+# ---------------------------------------------------------------------------
+
+RESULT_ERRORS_CSV_DEFAULT = "output/result_errors.csv"
+
+ERROR_CACHE_COLUMNS = [
+    "pair_id", "food_a_barcode", "food_b_barcode",
+    "framing_type", "format", "purpose",
+    "food_a_name", "food_b_name",
+    "error_message", "errored_at",
+]
+
+
+def load_error_cache(path: str) -> dict[tuple, dict]:
+    """Read prior error rows from the sidecar. Returns {key → record}."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        df = pd.read_csv(p, dtype=str, keep_default_na=False)
+    except Exception as e:
+        print(f"WARN: could not read {path}: {e}", file=sys.stderr)
+        return {}
+    cache: dict[tuple, dict] = {}
+    for _, r in df.iterrows():
+        rec = r.to_dict()
+        rec["status"] = "error"
+        cache[_result_cache_key(rec)] = rec
+    return cache
+
+
+def write_error_cache(path: str, records) -> None:
+    """Overwrite the sidecar with the given records (one row per record).
+    Atomically writes via a tmp file."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    import csv as _csv
+    tmp = path + ".tmp"
+    with open(tmp, "w", newline="") as f:
+        w = _csv.DictWriter(f, fieldnames=ERROR_CACHE_COLUMNS)
+        w.writeheader()
+        for r in records:
+            w.writerow({k: r.get(k, "") for k in ERROR_CACHE_COLUMNS})
+    os.replace(tmp, path)
+
+
+def migrate_errors_from_results(results_path: str, sidecar_path: str) -> int:
+    """One-shot: if the sidecar doesn't exist yet, copy any status='error'
+    rows out of an existing results.csv into it. Returns count migrated.
+    No-op when the sidecar is already present."""
+    if Path(sidecar_path).exists():
+        return 0
+    if not Path(results_path).exists():
+        return 0
+    try:
+        df = pd.read_csv(results_path, dtype=str, keep_default_na=False)
+    except Exception:
+        return 0
+    err_rows = df[df.get("status", "") == "error"] if "status" in df.columns else df.iloc[0:0]
+    if err_rows.empty:
+        return 0
+    records = []
+    for _, r in err_rows.iterrows():
+        records.append({
+            "pair_id": r.get("pair_id", ""),
+            "food_a_barcode": r.get("food_a_barcode", ""),
+            "food_b_barcode": r.get("food_b_barcode", ""),
+            "framing_type": r.get("framing_type", ""),
+            "format": r.get("format", ""),
+            "purpose": r.get("purpose", ""),
+            "food_a_name": r.get("food_a_name", ""),
+            "food_b_name": r.get("food_b_name", ""),
+            "error_message": r.get("error_message", ""),
+            "errored_at": "",  # unknown — migrated from a prior run
+        })
+    write_error_cache(sidecar_path, records)
+    return len(records)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Score input.csv pairs and emit results / cards / blog inputs.",
+    )
+    p.add_argument("--force", action="store_true",
+                   help="re-score every input row and regenerate every blog "
+                        "post, even ones already produced on a prior run")
+    p.add_argument("--blog-only", action="store_true",
+                   help="skip scoring and card rendering; only (re)generate "
+                        "blog posts from existing output/blog_inputs/. "
+                        "Combine with --force to refresh existing posts.")
+    return p.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
+
+    # Blog-only path: skip scoring, sidecar, results.csv writing, and card
+    # rendering. Just (re)generate .mdx posts from the existing
+    # output/blog_inputs/ JSONs. No backend or DB needed.
+    if args.blog_only:
+        try:
+            write_blog_posts_from_inputs(
+                "output/blog_inputs", "output/blog_posts", force=args.force,
+            )
+        except Exception as e:
+            print(f"WARNING: blog post generation failed: {e}", file=sys.stderr)
+            return 1
+        return 0
+
     backend_base_url = os.environ.get("BACKEND_BASE_URL")
     if not backend_base_url:
         print("ERROR: BACKEND_BASE_URL env var is required", file=sys.stderr)
@@ -898,7 +1228,33 @@ def main() -> int:
     df = pd.read_csv("input.csv", dtype=str, keep_default_na=False)
     os.makedirs("output", exist_ok=True)
 
+    result_errors_csv = RESULT_ERRORS_CSV_DEFAULT
+
+    # One-shot migration: lift any error rows out of an existing results.csv
+    # and into the sidecar so they're purged from the visible output and
+    # not retried.
+    migrated = migrate_errors_from_results("output/results.csv", result_errors_csv)
+    if migrated:
+        print(f"Migrated {migrated} prior error row(s) → {result_errors_csv}")
+
+    if args.force:
+        ok_cache: dict[tuple, dict] = {}
+        err_cache: dict[tuple, dict] = {}
+    else:
+        ok_cache = load_completed_cache("output/results.csv")
+        err_cache = load_error_cache(result_errors_csv)
+    completed_cache: dict[tuple, dict] = {**ok_cache, **err_cache}
+    if completed_cache:
+        print(f"Loaded cache: {len(ok_cache)} ok / {len(err_cache)} error "
+              f"(use --force to recompute all)")
+
     results = []
+    cached_count = 0
+    purged_error_count = 0
+    # Errors retained for the sidecar at end-of-run: prior errors whose key
+    # still appears in input.csv (kept) plus any fresh errors from this run.
+    # Stale errors whose input row is gone naturally drop out.
+    sidecar_errors: dict[tuple, dict] = {}
     POSTABILITY_THRESHOLD = 7
     for _, row in df.iterrows():
         row_dict = row.to_dict()
@@ -911,6 +1267,36 @@ def main() -> int:
         framing = clean_cell(row_dict.get("framing_type"))
         purpose = clean_cell(row_dict.get("purpose")) or "snack"
         fmt = resolve_format(row_dict)
+
+        # Cache check before any expensive work. Key includes purpose/framing/
+        # barcodes/format so an edit to those fields invalidates the cache.
+        cache_lookup = {
+            "pair_id": pair_id,
+            "food_a_barcode": a_barcode,
+            "food_b_barcode": b_barcode,
+            "framing_type": framing,
+            "format": fmt,
+            "purpose": purpose,
+        }
+        cache_key = _result_cache_key(cache_lookup)
+        cached = completed_cache.get(cache_key)
+        if cached is not None:
+            if (cached.get("status") or "") == "error":
+                # Prior error: purge from results.csv (don't append) but keep
+                # in the sidecar so it's still suppressed next run.
+                sidecar_errors[cache_key] = {
+                    **cache_lookup,
+                    "food_a_name": a_name, "food_b_name": b_name,
+                    "error_message": cached.get("error_message", ""),
+                    "errored_at": cached.get("errored_at", ""),
+                }
+                purged_error_count += 1
+                print(f"[{pair_id}] SKIPPED (prior error) — edit a key field to retry")
+            else:
+                results.append(cached)
+                cached_count += 1
+                print(f"[{pair_id}] CACHED ({cached.get('status', '?')}) — skipped re-scoring")
+            continue
 
         a_display, b_display, a_label, b_label = resolve_names(row_dict)
 
@@ -958,49 +1344,41 @@ def main() -> int:
                 b_score, b_interp, b_helps, b_hurts, b_err = score_food(
                     conn, backend_base_url, b_display, b_barcode, purpose)
         except Exception as e:  # never let one row kill the batch
-            results.append({
-                **base_record,
-                "food_a_score": None, "food_a_interpretation": "",
-                "food_a_what_helps": "", "food_a_what_hurts": "",
-                "food_b_score": None, "food_b_interpretation": "",
-                "food_b_what_helps": "", "food_b_what_hurts": "",
-                "score_diff": None,
-                "headline": "", "headlineMode": "",
-                "content_priority": 0,
-                "postability_score": 0,
-                "verdict": "",
-                "status": "error",
+            sidecar_errors[cache_key] = {
+                **cache_lookup,
+                "food_a_name": a_name, "food_b_name": b_name,
                 "error_message": f"unexpected: {e}",
-            })
-            print(f"[{pair_id}] ERROR (unexpected): {e}")
+                "errored_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            print(f"[{pair_id}] ERROR (unexpected): {e} — recorded to {result_errors_csv}")
             continue
 
         errors = [m for m in (a_err, b_err) if m]
         if errors:
-            headline, headline_mode = "", ""
-            relation = ""
-            score_diff = None
-            priority = 0
-            postability = 0
-            verdict = ""
-            status = "error"
-            error_message = "; ".join(errors)
+            sidecar_errors[cache_key] = {
+                **cache_lookup,
+                "food_a_name": a_name, "food_b_name": b_name,
+                "error_message": "; ".join(errors),
+                "errored_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            print(f"[{pair_id}] ERROR: {'; '.join(errors)} — recorded to {result_errors_csv}")
+            continue
+
+        halo = is_health_halo(row_dict)
+        headline, headline_mode = generate_headline(
+            row_dict, fmt, a_score, b_score, halo,
+        )
+        relation = score_relation(a_score, b_score) if (a_score is not None and b_score is not None) else ""
+        score_diff = (a_score - b_score) if (a_score is not None and b_score is not None) else None
+        priority = content_priority(framing, relation) if relation else 0
+        postability = postability_score(fmt, headline, halo, a_score, b_score, relation)
+        verdict = verdict_sentence(a_display, a_score, a_helps, a_hurts)
+        if postability >= POSTABILITY_THRESHOLD:
+            status = "ok"
+            error_message = ""
         else:
-            halo = is_health_halo(row_dict)
-            headline, headline_mode = generate_headline(
-                row_dict, fmt, a_score, b_score, halo,
-            )
-            relation = score_relation(a_score, b_score) if (a_score is not None and b_score is not None) else ""
-            score_diff = (a_score - b_score) if (a_score is not None and b_score is not None) else None
-            priority = content_priority(framing, relation) if relation else 0
-            postability = postability_score(fmt, headline, halo, a_score, b_score, relation)
-            verdict = verdict_sentence(a_display, a_score, a_helps, a_hurts)
-            if postability >= POSTABILITY_THRESHOLD:
-                status = "ok"
-                error_message = ""
-            else:
-                status = "low_postability"
-                error_message = f"postability {postability} < {POSTABILITY_THRESHOLD}"
+            status = "low_postability"
+            error_message = f"postability {postability} < {POSTABILITY_THRESHOLD}"
 
         results.append({
             **base_record,
@@ -1025,10 +1403,8 @@ def main() -> int:
             b_part = f"vs {b_display} ({b_score})" if b_score is not None else "(single)"
             print(f"[{pair_id}] {tag} {a_display} ({a_score}) {b_part} "
                   f"post={postability} — {headline}")
-        elif status == "low_postability":
-            print(f"[{pair_id}] FILTERED post={postability} — {headline or '(no headline)'}")
         else:
-            print(f"[{pair_id}] ERROR: {error_message}")
+            print(f"[{pair_id}] FILTERED post={postability} — {headline or '(no headline)'}")
 
     out_df = pd.DataFrame(results, columns=[
         "pair_id",
@@ -1045,6 +1421,15 @@ def main() -> int:
         "status", "error_message",
     ])
     out_df.to_csv("output/results.csv", index=False)
+
+    # Sidecar of error rows. Includes prior errors whose input row still
+    # exists (kept) plus any fresh errors from this run. Stale errors whose
+    # input row was deleted from input.csv naturally drop out.
+    if sidecar_errors:
+        write_error_cache(result_errors_csv, sidecar_errors.values())
+    elif Path(result_errors_csv).exists():
+        # All previously-tracked errors are gone from input.csv → empty file.
+        write_error_cache(result_errors_csv, [])
 
     # Per-item blog inputs (only for status=='ok' rows that passed the filter).
     from bullets import punch_up_bullets, split_raw_bullets
@@ -1123,6 +1508,12 @@ def main() -> int:
     for s in ("ok", "low_postability", "error", "skipped"):
         if by_status.get(s):
             print(f"  {s:<16} {by_status[s]}")
+    if cached_count:
+        print(f"Cached (skipped re-scoring): {cached_count} of {total}")
+    if sidecar_errors:
+        print(f"Errors purged from results.csv: {len(sidecar_errors)} "
+              f"({purged_error_count} prior + {len(sidecar_errors) - purged_error_count} new) "
+              f"→ {result_errors_csv}")
     print(f"Wrote {total} rows to output/results.csv")
     print(f"Wrote {blog_written} blog input JSON file(s) to {blog_dir}/")
 
@@ -1148,7 +1539,7 @@ def main() -> int:
     # Generate markdown blog posts from the blog_inputs JSON via OpenAI.
     # No-ops when OPENAI_API_KEY is unset; never blocks card rendering.
     try:
-        write_blog_posts_from_inputs(blog_dir, "output/blog_posts")
+        write_blog_posts_from_inputs(blog_dir, "output/blog_posts", force=args.force)
     except Exception as e:
         print(f"\nWARNING: blog post generation failed: {e}", file=sys.stderr)
 

@@ -522,12 +522,142 @@ def search_by_brand(conn: sqlite3.Connection, brand_norm: str, limit: int) -> li
     return out
 
 
+# --- Quality gates: brand / name / nutrition ------------------------------
+#
+# US-recognizable brand names. Used as a *boost* in product_quality_score,
+# never as a hard filter — long-tail valid brands stay in.
+
+US_BRAND_NAMES: tuple[str, ...] = (
+    # Confectionery
+    "mars", "snickers", "twix", "m&m's", "m&ms", "milky way",
+    "hershey's", "hershey", "reese's", "reeses", "kit kat",
+    "skittles", "starburst", "nestle", "ghirardelli",
+    # Soft drinks / waters
+    "coca-cola", "coke", "pepsi", "mountain dew", "dr pepper",
+    "sprite", "fanta", "gatorade", "powerade", "vitaminwater",
+    "vitamin water", "red bull", "monster", "rockstar", "celsius",
+    "sunkist", "schweppes", "canada dry", "snapple", "arizona",
+    # Cereal & breakfast
+    "kellogg's", "kelloggs", "kellogg", "general mills", "post",
+    "quaker", "kashi", "cheerios", "frosted flakes", "froot loops",
+    "lucky charms", "wheaties", "raisin bran", "special k",
+    # Chips / snacks
+    "frito-lay", "frito lay", "lay's", "lays", "doritos", "tostitos",
+    "ruffles", "pringles", "cheetos", "fritos", "sun chips",
+    "sunchips", "stacy's", "popchips",
+    # Dairy / yogurt
+    "chobani", "yoplait", "dannon", "fage", "oikos",
+    "stonyfield", "siggi's", "siggis",
+    # Ice cream
+    "ben & jerry's", "ben and jerry's", "haagen-dazs", "haagen dazs",
+    "halo top", "talenti", "breyers", "edy's", "edys", "blue bunny",
+    "klondike",
+    # Bars
+    "kind", "clif", "rxbar", "luna", "nature valley", "quest",
+    "powerbar", "larabar", "perfect bar", "thinkthin",
+    # Cookies / baked
+    "oreo", "nabisco", "keebler", "pepperidge farm", "chips ahoy",
+    "famous amos", "milano",
+    # Crackers
+    "cheez-it", "cheez it", "ritz", "triscuit", "wheat thins", "goldfish",
+    # Drinks / juice
+    "naked juice", "naked", "tropicana", "minute maid", "sunny d",
+    "ocean spray", "welch's", "v8", "honest tea",
+    # Other staples
+    "kraft", "campbell's", "campbells", "heinz", "starbucks",
+    "sara lee", "wonder bread",
+    # Meal replacement / energy
+    "soylent", "ensure", "muscle milk", "premier protein",
+    "annie's", "annies", "amy's", "amys",
+)
+
+US_BRAND_PATTERNS: tuple[re.Pattern, ...] = tuple(
+    re.compile(r"\b" + re.escape(s) + r"\b", re.IGNORECASE)
+    for s in US_BRAND_NAMES
+)
+
+# Brand strings that are just category descriptors. A candidate fails the
+# gate only when *every* token in the brand field appears here, so mixed
+# entries like "Coca-Cola, soda" still pass.
+GENERIC_BRAND_TOKENS: frozenset[str] = frozenset({
+    "smoothie", "yogurt", "yoghurt", "vitamin water", "vitaminwater",
+    "green tea", "tea", "juice", "water", "milk", "soda", "cola",
+    "granola", "cereal", "popcorn", "chips", "ice cream", "energy drink",
+    "sports drink", "kombucha", "snack", "bar", "cookies", "crackers",
+    "organic", "natural", "gluten free", "gluten-free", "low fat",
+    "fat free", "diet", "lite", "light", "kids", "bio", "eco",
+    "n/a", "none", "unknown", "various", "no brand", "brandless",
+})
+
+# Patterns stripped from the suggested display name so the cleaner starts
+# from "Brand Product" rather than "Brand Product Original Family Size 12oz".
+DISPLAY_SUFFIX_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"\bnet\s*wt\.?\s*[\d./\s]+\s*(?:oz|g|lb|ml|fl)?\b", re.IGNORECASE),
+    re.compile(r"\b\d+(?:\.\d+)?\s*(?:oz|g|lb|kg|ml|fl\s*oz|count|ct|pack)\b", re.IGNORECASE),
+    re.compile(r"\b(?:family|sharing|value|party|king|fun)\s+size\b", re.IGNORECASE),
+    re.compile(r"\boriginal\b", re.IGNORECASE),
+    re.compile(r"\bnew!?\b", re.IGNORECASE),
+)
+
+
+def _brand_tokens(brand: str) -> list[str]:
+    """Split brand on ,/; → lowercase tokens, empties stripped."""
+    return [t.strip().lower() for t in re.split(r"[,;]", brand or "") if t.strip()]
+
+
+def is_known_us_brand(brand: str) -> bool:
+    if not brand:
+        return False
+    return any(p.search(brand) for p in US_BRAND_PATTERNS)
+
+
+def is_only_generic_brand(brand: str) -> bool:
+    """True iff every token in the brand field is a category descriptor.
+    Returns False on empty (handled by a separate empty-brand check)."""
+    tokens = _brand_tokens(brand)
+    if not tokens:
+        return False
+    return all(t in GENERIC_BRAND_TOKENS for t in tokens)
+
+
+def has_clean_name(name: str) -> bool:
+    """Reject ingredient-dump style names without losing real products."""
+    if not name:
+        return False
+    if len(name) > 120:
+        return False
+    sep_count = sum(name.count(s) for s in (",", "|", "/"))
+    if sep_count > 3:
+        return False
+    return True
+
+
+def product_quality_score(c: dict) -> int:
+    """0-10 composite combining nutrition completeness, brand recognition,
+    serving size, and name cleanliness. Used to sort candidates within a
+    bucket and emitted to discovery_results.csv as a hint for the cleaner."""
+    score = 0
+    score += min(5, (c.get("completeness") or 0) // 2)
+    if is_known_us_brand(c.get("brand") or ""):
+        score += 2
+    if c.get("serving_quantity") is not None:
+        score += 1
+    name = (c.get("name") or "").strip()
+    if name and len(name) <= 60:
+        score += 1
+    if name and sum(name.count(s) for s in (",", "|", "/")) == 0:
+        score += 1
+    return max(0, min(10, score))
+
+
 def has_usable_nutrition(c: dict) -> bool:
-    """Pre-filter aligned with main.py's REQUIRED_NUTRITION_FIELDS so the
-    backend won't reject the candidate downstream."""
+    """Pre-filter requiring the four backend-required fields plus
+    sugars_100g. Discovery prefers products where sugar bullets are
+    computable since most framings (sugar_shock, health_halo) lean on it."""
     nutri = c.get("nutriments") or {}
     required = (
-        "energy-kcal_100g", "proteins_100g", "fat_100g", "carbohydrates_100g",
+        "energy-kcal_100g", "proteins_100g", "fat_100g",
+        "carbohydrates_100g", "sugars_100g",
     )
     return all(nutri.get(k) is not None for k in required)
 
@@ -606,15 +736,27 @@ def discovery_postability(
 
 # --- Display name / label suggestions -------------------------------------
 
-def suggest_display_name(raw: str) -> str:
+def suggest_display_name(raw: str, brand: str = "") -> str:
+    """Trim a noisy OFF product_name into something a human will recognize.
+    When `brand` is a known US brand and not already in the name, prepend
+    it so the suggestion reads like 'Brand Product' (e.g. 'Kellogg's
+    Frosted Flakes')."""
     if not raw:
-        return ""
+        return (brand or "").strip()
     s = raw.strip()
     for sep in (",", " - ", " | ", " / ", " (", " ["):
         if sep in s:
             s = s.split(sep)[0].strip()
+    for pat in DISPLAY_SUFFIX_PATTERNS:
+        s = pat.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip(" -,")
+    brand_first = (brand or "").split(",")[0].strip()
+    if (brand_first
+            and brand_first.lower() not in s.lower()
+            and is_known_us_brand(brand_first)):
+        s = f"{brand_first} {s}".strip()
     words = s.split()
-    return " ".join(words[:5]) if len(words) > 5 else s
+    return " ".join(words[:6]) if len(words) > 6 else s
 
 
 # --- CSV I/O --------------------------------------------------------------
@@ -629,7 +771,7 @@ CSV_COLUMNS = [
     "reference_display_name_suggested", "reference_label_suggested",
     "reference_score", "reference_interpretation",
     "score_diff", "purpose", "framing_type", "format",
-    "content_angle", "postability_score",
+    "content_angle", "postability_score", "product_quality_score",
     "status", "error_message",
 ]
 
@@ -767,7 +909,7 @@ def build_comparison_row(
         "candidate_name_raw": cand["name"],
         "candidate_brand": cand["brand"] or "",
         "candidate_barcode": cand["code"],
-        "candidate_display_name_suggested": suggest_display_name(cand["name"]),
+        "candidate_display_name_suggested": suggest_display_name(cand["name"], cand.get("brand", "")),
         "candidate_label_suggested": bucket["label_hint"],
         "candidate_score": cand_score,
         "candidate_interpretation": cand_interp,
@@ -790,6 +932,7 @@ def build_comparison_row(
         "format": "comparison",
         "content_angle": bucket["angle"],
         "postability_score": postability,
+        "product_quality_score": product_quality_score(cand),
         "status": "pending",
         "error_message": "",
     }
@@ -819,7 +962,7 @@ def build_exposure_row(
         "candidate_name_raw": cand["name"],
         "candidate_brand": cand["brand"] or "",
         "candidate_barcode": cand["code"],
-        "candidate_display_name_suggested": suggest_display_name(cand["name"]),
+        "candidate_display_name_suggested": suggest_display_name(cand["name"], cand.get("brand", "")),
         "candidate_label_suggested": bucket["label_hint"],
         "candidate_score": cand_score,
         "candidate_interpretation": cand_interp,
@@ -838,6 +981,7 @@ def build_exposure_row(
         "format": "exposure",
         "content_angle": bucket["angle"],
         "postability_score": postability,
+        "product_quality_score": product_quality_score(cand),
         "status": "pending",
         "error_message": "",
     }
@@ -866,7 +1010,7 @@ def build_swap_row(
         "candidate_name_raw": cand["name"],
         "candidate_brand": cand["brand"] or "",
         "candidate_barcode": cand["code"],
-        "candidate_display_name_suggested": suggest_display_name(cand["name"]),
+        "candidate_display_name_suggested": suggest_display_name(cand["name"], cand.get("brand", "")),
         "candidate_label_suggested": bucket["label_hint"],
         "candidate_score": cand_score,
         "candidate_interpretation": cand_interp,
@@ -885,6 +1029,7 @@ def build_swap_row(
         "format": "swap",
         "content_angle": bucket["angle"] + " (swap)",
         "postability_score": postability,
+        "product_quality_score": product_quality_score(cand),
         "status": "pending",
         "error_message": "",
     }
@@ -946,8 +1091,27 @@ def process_bucket(
             seen_codes.add(c["code"])
             unique.append(c)
 
-    usable = [c for c in unique if has_usable_nutrition(c)]
-    usable.sort(key=lambda c: -c["completeness"])
+    n_no_nutri = n_no_brand = n_generic_brand = n_bad_name = 0
+    usable: list[dict] = []
+    for c in unique:
+        if not has_usable_nutrition(c):
+            n_no_nutri += 1
+            continue
+        brand = (c.get("brand") or "").strip()
+        if not brand:
+            n_no_brand += 1
+            continue
+        if is_only_generic_brand(brand):
+            n_generic_brand += 1
+            continue
+        if not has_clean_name(c.get("name") or ""):
+            n_bad_name += 1
+            continue
+        usable.append(c)
+    usable.sort(key=lambda c: (
+        -product_quality_score(c),
+        -(c.get("completeness") or 0),
+    ))
 
     # A candidate is "fresh" if it has at least one applicable-format pair
     # we haven't considered yet. This way, a candidate that's been
@@ -970,10 +1134,13 @@ def process_bucket(
 
     print(f"  {len(unique)} matches · {len(usable)} usable · "
           f"{skipped_old} already considered · scoring {len(fresh)}")
+    print(f"    dropped → no-nutri={n_no_nutri} no-brand={n_no_brand} "
+          f"generic-brand={n_generic_brand} bad-name={n_bad_name}")
 
     if dry_run:
         for c in fresh:
-            print(f"  [dry-run]   {c['name'][:50]} (comp={c['completeness']})")
+            print(f"  [dry-run]   q={product_quality_score(c)} comp={c['completeness']} "
+                  f"{c['name'][:40]:<40} [{(c.get('brand') or '—')[:25]}]")
         return [], [], next_id
 
     kept_rows: list[dict] = []
