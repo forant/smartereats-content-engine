@@ -846,71 +846,44 @@ def _seo_slug(food_a_display: str, food_b_display: str) -> str:
     return _slugify_for_blog(f"is {a} healthy")
 
 
-def _extract_frontmatter_title(path: Path) -> Optional[str]:
-    """Read the `title:` value from a `.mdx` file's YAML frontmatter.
-    Returns None when the file is unreadable or has no title."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception:
-        return None
-    m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
-    if not m:
-        return None
-    tm = re.search(r"^title:\s*(.+?)\s*$", m.group(1), re.MULTILINE)
-    if not tm:
-        return None
-    title = tm.group(1).strip()
-    if len(title) >= 2 and title[0] == title[-1] and title[0] in ('"', "'"):
-        title = title[1:-1]
-    return title
-
-
-def load_published_blog_index(website_blog_dir: Optional[str]) -> dict[str, str]:
-    """Build {slug → title} from `.mdx` files already published to the
+def load_published_blog_index(website_blog_dir: Optional[str]) -> list[str]:
+    """Return sorted slugs of `.mdx` files already published to the
     website's content/blog/ directory. Used as the candidate pool for the
-    Related section so links never point to unpublished (404) posts.
+    Related Comparisons section — referenced slugs always resolve at
+    build time, never 404. The site renders the link text from each
+    destination's current title, so we only need slugs here.
 
-    Returns an empty dict — and prints a warning — when the env var is
-    unset, the path is missing, or the path isn't a directory. Never raises."""
+    Returns [] — and prints a warning — when the env var is unset, the
+    path is missing, or the path isn't a directory. Never raises."""
     if not website_blog_dir:
         print("WARNING: WEBSITE_BLOG_DIR is not set; staged posts will be "
-              "written without a Related section.", file=sys.stderr)
-        return {}
+              "written without a Related Comparisons section.", file=sys.stderr)
+        return []
     p = Path(website_blog_dir)
     if not p.exists() or not p.is_dir():
         print(f"WARNING: WEBSITE_BLOG_DIR={website_blog_dir!r} is not a "
               "directory; staged posts will be written without a Related "
-              "section.", file=sys.stderr)
-        return {}
-    index: dict[str, str] = {}
-    for mdx in p.glob("*.mdx"):
-        title = _extract_frontmatter_title(mdx) or mdx.stem
-        index[mdx.stem] = title
-    return index
+              "Comparisons section.", file=sys.stderr)
+        return []
+    return sorted(mdx.stem for mdx in p.glob("*.mdx"))
 
 
-def _build_related_links(
-    published_index: dict[str, str],
+def _pick_related_slugs(
+    published_slugs: list[str],
     current_slug: str,
     rotation_idx: int,
     n: int = 3,
 ) -> list[str]:
-    """Return up to `n` `- [Title](/blog/slug)` lines drawn from
-    `published_index`, excluding `current_slug`. Rotates by `rotation_idx`
-    so each post cites a different slice. Returns [] if fewer than 2
-    other published posts exist (per spec)."""
-    candidates = sorted(
-        (s, t) for s, t in published_index.items() if s != current_slug
-    )
+    """Return up to `n` slugs from `published_slugs`, excluding
+    `current_slug`. Rotates by `rotation_idx` so each post cites a
+    different slice. Returns [] when fewer than 2 other published posts
+    exist (per spec)."""
+    candidates = [s for s in published_slugs if s != current_slug]
     if len(candidates) < 2:
         return []
     total = len(candidates)
     start = rotation_idx % total
-    out: list[str] = []
-    for i in range(min(n, total)):
-        slug, title = candidates[(start + i) % total]
-        out.append(f"- [{title}](/blog/{slug})")
-    return out
+    return [candidates[(start + i) % total] for i in range(min(n, total))]
 
 
 def generate_blog_post_with_openai(blog_input: dict, title: str, model: str) -> str:
@@ -1007,10 +980,10 @@ def write_blog_posts_from_inputs(
         plan.append((json_path, title, out_path, blog_input))
 
     # Related-section candidates come exclusively from the live website's
-    # content/blog/ directory so links never point at staged-but-unpublished
-    # posts that would 404. When WEBSITE_BLOG_DIR is unset/invalid, the
-    # index is empty and the Related section is skipped entirely.
-    published_index = load_published_blog_index(os.environ.get("WEBSITE_BLOG_DIR"))
+    # content/blog/ directory so referenced slugs always resolve at build
+    # time. When WEBSITE_BLOG_DIR is unset/invalid, the list is empty and
+    # the Related Comparisons section is skipped entirely.
+    published_slugs = load_published_blog_index(os.environ.get("WEBSITE_BLOG_DIR"))
 
     # Phase 2: generate, skipping ones that already exist unless forced.
     written = 0
@@ -1032,18 +1005,21 @@ def write_blog_posts_from_inputs(
                   file=sys.stderr)
             continue
 
-        # Related section: links to posts already published in
-        # WEBSITE_BLOG_DIR, excluding the post we're generating. Empty
-        # `published_index` (no env var, missing dir) → section is skipped.
-        related_lines = _build_related_links(
-            published_index, out_path.stem, idx, n=3,
+        # Related Comparisons: pick up to 3 published slugs from
+        # WEBSITE_BLOG_DIR (excluding the post we're generating) and emit a
+        # single <RelatedPosts /> JSX component. The site renders link text
+        # from each destination's current title at build time, so titles
+        # never go stale here. Empty pool (no env var / missing dir / <2
+        # other posts) → section is skipped entirely.
+        related_slugs = _pick_related_slugs(
+            published_slugs, out_path.stem, idx, n=3,
         )
-        if related_lines:
+        if related_slugs:
+            slugs_attr = ",".join(related_slugs)
             markdown = (
                 markdown.rstrip()
                 + "\n\n## Related Comparisons\n\n"
-                + "\n".join(related_lines)
-                + "\n"
+                + f'<RelatedPosts slugs="{slugs_attr}" />\n'
             )
 
         try:

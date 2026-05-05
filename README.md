@@ -357,10 +357,13 @@ Each post:
   nutrition numbers, no medical claims
 - ends with a deterministic `## Related Comparisons` section appended in
   Python after the model call. Candidates come exclusively from the
-  `WEBSITE_BLOG_DIR` directory (the live website's `content/blog/`),
-  rotated by post index, formatted as `- [Title](/blog/slug)`. Skipped
-  automatically when `WEBSITE_BLOG_DIR` is unset/invalid or when fewer
-  than 2 other published posts exist — never produces 404s.
+  `WEBSITE_BLOG_DIR` directory (the live website's `content/blog/`) and
+  are rotated by post index. The section is rendered as a single JSX
+  component call — `<RelatedPosts slugs="slug1,slug2,slug3" />` — and
+  the site looks up each destination's current title at build time, so
+  titles never drift when posts are edited later. Skipped automatically
+  when `WEBSITE_BLOG_DIR` is unset/invalid or when fewer than 2 other
+  published posts exist; referenced slugs always resolve.
 
 Filenames are the URL slug:
 `output/blog_posts/is-gatorade-healthy-vs-coca-cola.mdx` (or
