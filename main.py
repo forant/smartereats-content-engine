@@ -733,6 +733,7 @@ Hard rules:
 - 350-500 words total. Markdown only.
 - Do NOT wrap your output in fences (no ```markdown). Output raw markdown.
 - Do NOT add any commentary before or after the post.
+- Every sentence must be specific to the provided food data or the reader’s practical decision. Avoid generic nutrition advice unless it is tied directly to a score, ingredient, macro, processing concern, or comparison from the JSON.
 
 Editorial stance — depends on the JSON's `format` field:
 
@@ -793,7 +794,7 @@ After the Better Alternatives bullets, on its own paragraph (NOT a heading, NOT 
 Want a faster way to find better swaps? SmarterEats lets you compare foods and discover healthier options instantly.
 
 ## Bottom Line
-2-3 concise sentences summarizing the practical decision. Take a clear stance about food_a. Do NOT recommend food_b unless format == "swap". Do NOT use any forbidden closer.
+2-3 concise sentences summarizing the practical decision. Take a clear stance about food_a. Do NOT recommend food_b unless format == "swap". Do NOT use any forbidden closer. Do not introduce generic advice in the Bottom Line. Restate the practical decision using the score, the strongest concern, and the best alternative direction.
 
 Do NOT generate a "## Related Comparisons" or "## Related" section yourself. That section is appended programmatically after your output from a curated list of already-published posts. Stop after the Bottom Line section.
 """
