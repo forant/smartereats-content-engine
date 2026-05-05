@@ -641,6 +641,23 @@ def _clear_discovery_all() -> None:
     st.session_state["cleaner_idx"] = 0
 
 
+def _delete_input_rows() -> None:
+    """Drop the multiselect-chosen rows from input.csv. Keyed on pair_id
+    so duplicates are unaffected. Stale entries in output/result_errors.csv
+    will self-evict on the next main.py run since they only persist while
+    a matching input row exists."""
+    selected = st.session_state.get("delete_input_select") or []
+    if not selected:
+        return
+    pair_ids = {s.split(":", 1)[0].strip() for s in selected}
+    df = load_csv()
+    if "pair_id" in df.columns:
+        df = df[~df["pair_id"].astype(str).isin(pair_ids)]
+        df.to_csv(INPUT_CSV, index=False)
+    st.session_state.pop("delete_input_select", None)
+    st.session_state.pop("delete_input_confirm", None)
+
+
 def render_cleaner_mode() -> None:
     df = _load_discoveries()
     if df.empty:
@@ -964,6 +981,42 @@ if df_show.empty:
     st.caption("No rows yet — the file will be created on first save.")
 else:
     st.dataframe(df_show, use_container_width=True)
+
+    # Row deletion. Lets the user prune input.csv rows from the UI rather
+    # than downloading + editing in a spreadsheet (which strips leading
+    # zeros from barcode columns and breaks lookups).
+    with st.expander(f"Delete rows from input.csv"):
+        st.caption(
+            "Tip: edit input.csv here instead of downloading it — Excel / "
+            "Google Sheets silently strip leading zeros from barcode columns, "
+            "which breaks DB lookups."
+        )
+        delete_options: list[str] = []
+        for _, r in df_show.iterrows():
+            a = (r.get("food_a_display_name") or r.get("food_a_name") or "?").strip()
+            b = (r.get("food_b_display_name") or r.get("food_b_name") or "").strip()
+            label = f"{r.get('pair_id', '')}: {a}"
+            if b:
+                label += f" vs {b}"
+            delete_options.append(label)
+        to_delete = st.multiselect(
+            "Rows to delete",
+            delete_options,
+            key="delete_input_select",
+        )
+        if to_delete:
+            confirm_del = st.checkbox(
+                f"Confirm delete ({len(to_delete)} row(s))",
+                key="delete_input_confirm",
+            )
+            st.button(
+                f"Delete {len(to_delete)} row(s)",
+                disabled=not confirm_del,
+                key="delete_input_btn",
+                on_click=_delete_input_rows,
+                help="Removes selected rows from input.csv. Cannot be undone.",
+            )
+
     dl_col, clr_col = st.columns([1, 2])
     with dl_col:
         st.download_button(

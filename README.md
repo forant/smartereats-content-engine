@@ -342,16 +342,25 @@ Each post:
 - uses an SEO title of the form `Is {Food A} Healthy?` (with an optional
   `(Food A vs Food B)` parenthetical for comparison/swap), repeated as
   `# title` in the body
-- follows the structure: intro (1-2 paragraphs) · `**Short answer:**`
-  one-liner · `## The quick verdict` · `## What hurts {food_a}` ·
-  `## Why the comparison matters` · `## Bottom line`
+- follows the structure: `## Quick Answer` · `## Quick Verdict` (with
+  `food_a.score` and `food_b.score` from the JSON) · `## Why {food_a}
+  Falls Short` (3-4 bullets) · `## How {food_b} Compares` (2-3 bullets;
+  for exposure-format posts this becomes `## What's Hidden in {food_a}`)
+  · `## Best Choice Based on Your Goal` (Weight loss / Energy & satiety
+  / Occasional treat) · `## Better Alternatives` (3-5 real foods) · the
+  fixed CTA paragraph "Want a faster way to find better swaps?
+  SmarterEats lets you compare foods and discover healthier options
+  instantly." · `## Bottom Line`
 - includes at least one numeric callout (sugar grams, calories, sodium,
-  fiber, or score) pulled verbatim from the JSON — never invented
+  fiber) pulled verbatim from the JSON — never invented
 - is instructed to use **only** the facts in the JSON — no invented
   nutrition numbers, no medical claims
-- ends with a deterministic `## Related` section (2-3 plain-text titles
-  of other posts in the same run, appended in Python after the model
-  call). Skipped automatically when fewer than 2 other posts exist.
+- ends with a deterministic `## Related Comparisons` section appended in
+  Python after the model call. Candidates come exclusively from the
+  `WEBSITE_BLOG_DIR` directory (the live website's `content/blog/`),
+  rotated by post index, formatted as `- [Title](/blog/slug)`. Skipped
+  automatically when `WEBSITE_BLOG_DIR` is unset/invalid or when fewer
+  than 2 other published posts exist — never produces 404s.
 
 Filenames are the URL slug:
 `output/blog_posts/is-gatorade-healthy-vs-coca-cola.mdx` (or

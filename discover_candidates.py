@@ -409,6 +409,8 @@ EXPOSURE_MARKER = "EXPOSURE"
 
 DEFAULT_TOP = 12        # candidates scored per bucket per run
 DEFAULT_MAX_RAW = 100   # raw DB matches considered before pre-filter
+DEFAULT_DEDUP_TOKENS = 2  # collapse flavor variants by default; per-bucket
+                          # `dedup_tokens` key overrides; 0 disables.
 
 
 # --- DB search + filtering ------------------------------------------------
@@ -436,6 +438,10 @@ def _completeness(nutri: dict) -> int:
 
 
 def _enrich_row(row: sqlite3.Row) -> dict:
+    """Normalize a `canonical_products` row to the dict shape the rest of
+    discovery expects. Names/brands come from canonical_name/canonical_brand
+    (deduped + cleaned by the canonical merger). `quality_score` is the
+    merger's 0-100 rating; we surface it as `canonical_quality_score`."""
     nutri = _parse_nutri(row["nutriments"])
     sg = row["serving_quantity"]
     try:
@@ -444,18 +450,31 @@ def _enrich_row(row: sqlite3.Row) -> dict:
         sg_f = None
     return {
         "code": row["code"],
-        "name": row["product_name"] or "",
-        "brand": row["brands"] or "",
+        "name": row["canonical_name"] or "",
+        "brand": row["canonical_brand"] or "",
         "serving_size": row["serving_size"] or "",
         "serving_quantity": sg_f,
         "ingredients_text": (row["ingredients_text"] or "").strip(),
         "nutriments": nutri,
         "completeness": _completeness(nutri),
+        "canonical_quality_score": row["quality_score"],
     }
 
 
+# All canonical rows currently have merge_confidence='high'; the constant
+# is here so future levels (e.g. 'medium') get gated explicitly rather
+# than silently leaking into discovery.
+_MIN_MERGE_CONFIDENCE_CLAUSE = "merge_confidence = 'high'"
+
+_CANONICAL_COLUMNS = (
+    "code, canonical_name, canonical_brand, nutriments, "
+    "serving_size, serving_quantity, ingredients_text, quality_score"
+)
+
+
 def search_db(conn: sqlite3.Connection, query: str, limit: int) -> list[dict]:
-    """FTS-then-LIKE name search with hyphen/space-collapsed fallback."""
+    """FTS-then-LIKE name search against the canonical layer, with
+    hyphen/space-collapsed fallback when FTS returns nothing."""
     q = query.strip()
     if not q:
         return []
@@ -463,18 +482,15 @@ def search_db(conn: sqlite3.Connection, query: str, limit: int) -> list[dict]:
     if not tokens:
         return []
 
-    columns = (
-        "code, product_name, brands, nutriments, "
-        "serving_size, serving_quantity, ingredients_text"
-    )
     fts_query = " ".join(tokens)
     try:
         cur = conn.execute(
             f"""
-            SELECT {columns}
-            FROM products_fts fts
-            JOIN products p ON p.rowid = fts.rowid
-            WHERE products_fts MATCH ?
+            SELECT {_CANONICAL_COLUMNS}
+            FROM canonical_fts fts
+            JOIN canonical_products p ON p.rowid = fts.rowid
+            WHERE canonical_fts MATCH ?
+              AND p.{_MIN_MERGE_CONFIDENCE_CLAUSE}
             ORDER BY rank
             LIMIT ?
             """,
@@ -486,35 +502,37 @@ def search_db(conn: sqlite3.Connection, query: str, limit: int) -> list[dict]:
     if rows:
         return [_enrich_row(r) for r in rows]
 
-    norm_expr = "REPLACE(REPLACE(name_normalized, '-', ''), ' ', '')"
+    norm_expr = "REPLACE(REPLACE(canonical_name_normalized, '-', ''), ' ', '')"
     likes = [f"%{t.replace('-', '').replace(' ', '')}%" for t in tokens]
     where = " AND ".join(f"{norm_expr} LIKE ?" for _ in likes)
     cur = conn.execute(
-        f"SELECT {columns} FROM products WHERE {where} LIMIT ?",
+        f"SELECT {_CANONICAL_COLUMNS} FROM canonical_products "
+        f"WHERE {where} AND {_MIN_MERGE_CONFIDENCE_CLAUSE} LIMIT ?",
         (*likes, limit),
     )
     return [_enrich_row(r) for r in cur.fetchall()]
 
 
 def search_by_brand(conn: sqlite3.Connection, brand_norm: str, limit: int) -> list[dict]:
-    """Pull up to `limit` products whose `brands` contains brand_norm as
-    a comma-delimited token (case-insensitive). False-positive resilient."""
+    """Pull up to `limit` canonical products whose `canonical_brand` contains
+    brand_norm as a comma-delimited token (case-insensitive). LIKE is a
+    cheap SQL prefilter; the Python token check guards against substring
+    collisions like "kind" matching "Mankind"."""
     bn = brand_norm.lower().strip()
     if not bn:
         return []
-    columns = (
-        "code, product_name, brands, nutriments, "
-        "serving_size, serving_quantity, ingredients_text"
-    )
-    # Use a permissive LIKE for the SQL prefilter, then word-token-match
-    # in Python to avoid substring collisions like "kind" inside "Mankind".
     cur = conn.execute(
-        f"SELECT {columns} FROM products WHERE brands_normalized LIKE ? LIMIT ?",
-        (f"%{bn}%", limit * 4),  # over-fetch since we'll filter
+        f"SELECT {_CANONICAL_COLUMNS} FROM canonical_products "
+        f"WHERE canonical_brand_normalized LIKE ? "
+        f"AND {_MIN_MERGE_CONFIDENCE_CLAUSE} LIMIT ?",
+        (f"%{bn}%", limit * 4),  # over-fetch since we'll token-filter
     )
     out: list[dict] = []
     for row in cur.fetchall():
-        tokens = [t.strip().lower() for t in re.split(r"[,;]", row["brands"] or "")]
+        tokens = [
+            t.strip().lower()
+            for t in re.split(r"[,;]", row["canonical_brand"] or "")
+        ]
         if bn in tokens:
             out.append(_enrich_row(row))
         if len(out) >= limit:
@@ -632,12 +650,49 @@ def has_clean_name(name: str) -> bool:
     return True
 
 
+def _dedup_by_family(candidates: list[dict], token_count: int) -> list[dict]:
+    """Collapse to one representative per (brand, first `token_count`
+    tokens of name) so the cleaner queue isn't padded with flavor-only
+    variants of the same product line.
+
+    The leading brand (if it appears at the start of the name) is stripped
+    before tokenizing so OFF entries like 'Chobani Flip S'mores' and 'Flip
+    S'mores' produce the same key. Tokens are sorted to also collapse
+    word-order variants ('Greek Yogurt Strawberry' ↔ 'Strawberry Greek
+    Yogurt').
+
+    `token_count <= 0` disables dedup. Lower values are more aggressive
+    (drops more flavor variants); higher values preserve more distinctions."""
+    if token_count <= 0:
+        return list(candidates)
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for c in candidates:
+        brand_key = re.sub(r"\s+", " ", (c.get("brand") or "").lower().strip())
+        name = (c.get("name") or "").lower()
+        if brand_key and name.startswith(brand_key):
+            name = name[len(brand_key):].strip(" -:,")
+        tokens = re.findall(r"[a-z0-9]+", name)[:token_count]
+        key = (brand_key, tuple(sorted(tokens)))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
 def product_quality_score(c: dict) -> int:
-    """0-10 composite combining nutrition completeness, brand recognition,
-    serving size, and name cleanliness. Used to sort candidates within a
-    bucket and emitted to discovery_results.csv as a hint for the cleaner."""
+    """0-10 composite combining the canonical merger's quality_score,
+    local nutrition completeness, brand recognition, serving size, and name
+    cleanliness. Used to sort candidates within a bucket and emitted to
+    discovery_results.csv as a hint for the cleaner."""
     score = 0
-    score += min(5, (c.get("completeness") or 0) // 2)
+    score += min(4, (c.get("completeness") or 0) // 3)  # 0-4 from completeness
+    cq = c.get("canonical_quality_score") or 0
+    if cq >= 80:
+        score += 2  # canonical merger flagged this entry as high-quality
+    elif cq >= 60:
+        score += 1
     if is_known_us_brand(c.get("brand") or ""):
         score += 2
     if c.get("serving_quantity") is not None:
@@ -1050,6 +1105,7 @@ def process_bucket(
     max_raw: int,
     is_brand: bool,
     dry_run: bool,
+    dedup_tokens: int,
 ) -> tuple[list[dict], list[dict], int]:
     """Score `top` fresh candidates from this bucket and emit comparison /
     exposure / swap rows according to per-format eligibility rules.
@@ -1113,6 +1169,13 @@ def process_bucket(
         -(c.get("completeness") or 0),
     ))
 
+    # Family-level dedup. Per-bucket override (`dedup_tokens` key on the
+    # bucket dict) wins over the CLI default. 0 disables.
+    bucket_dedup = bucket.get("dedup_tokens", dedup_tokens)
+    n_pre_dedup = len(usable)
+    usable = _dedup_by_family(usable, token_count=bucket_dedup)
+    n_dedup = n_pre_dedup - len(usable)
+
     # A candidate is "fresh" if it has at least one applicable-format pair
     # we haven't considered yet. This way, a candidate that's been
     # comparison-evaluated but never exposure-evaluated (e.g. because the
@@ -1135,7 +1198,8 @@ def process_bucket(
     print(f"  {len(unique)} matches · {len(usable)} usable · "
           f"{skipped_old} already considered · scoring {len(fresh)}")
     print(f"    dropped → no-nutri={n_no_nutri} no-brand={n_no_brand} "
-          f"generic-brand={n_generic_brand} bad-name={n_bad_name}")
+          f"generic-brand={n_generic_brand} bad-name={n_bad_name} "
+          f"family-dedup={n_dedup}")
 
     if dry_run:
         for c in fresh:
@@ -1256,6 +1320,11 @@ def parse_args() -> argparse.Namespace:
                    help=f"candidates scored per bucket per run (default {DEFAULT_TOP})")
     p.add_argument("--max-raw", type=int, default=DEFAULT_MAX_RAW,
                    help=f"raw matches pulled per query (default {DEFAULT_MAX_RAW})")
+    p.add_argument("--dedup-tokens", type=int, default=DEFAULT_DEDUP_TOKENS,
+                   help=f"family-dedup prefix tokens for food_a (default "
+                        f"{DEFAULT_DEDUP_TOKENS}). 0 disables dedup; higher "
+                        "preserves flavor-level distinctions. Overridden per-"
+                        "bucket via the `dedup_tokens` key on a bucket dict.")
     p.add_argument("--bucket", type=str, default=None,
                    help="run only this bucket key (e.g. 'yogurt', 'brand_kind')")
     p.add_argument("--brands", action="store_true",
@@ -1397,6 +1466,7 @@ def main() -> int:
             max_raw=args.max_raw,
             is_brand=is_brand,
             dry_run=args.dry_run,
+            dedup_tokens=args.dedup_tokens,
         )
 
         # Persist per-bucket so a Ctrl-C mid-run doesn't lose prior buckets.

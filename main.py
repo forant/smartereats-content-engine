@@ -50,16 +50,20 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 def _barcode_variants(barcode: str) -> list[str]:
     """Return barcode variants to try when looking up.
 
-    OFF stores 13-digit EAN. US UPCs (12 digits) are typically stored with a
-    leading '0'. Some entries also keep the bare 12-digit form. Try the
-    user's value first, then a leading-zero-padded variant, then a stripped
-    variant — whichever path matches first wins.
-    """
-    out = [barcode]
+    OFF stores 13-digit EAN. US UPCs (12 digits) are typically stored with
+    a leading '0'. Spreadsheet apps (Excel, Numbers, Google Sheets) strip
+    leading zeros aggressively, so 11-digit input is often a 13-digit code
+    with two leading zeros lost — try every plausible padding so the user
+    doesn't have to hand-fix every row."""
+    out: list[str] = [barcode]
     if barcode.isdigit():
-        if len(barcode) == 12:
-            out.append("0" + barcode)
-        elif len(barcode) == 13 and barcode.startswith("0"):
+        # Zero-pad up to 12- and 13-digit forms (no-op when already that long).
+        for n in (12, 13):
+            padded = barcode.zfill(n)
+            if padded != barcode:
+                out.append(padded)
+        # Strip a single leading zero too (covers the inverse case).
+        if len(barcode) >= 2 and barcode.startswith("0"):
             out.append(barcode[1:])
     # Dedupe while preserving order.
     seen = set()
@@ -725,7 +729,7 @@ Hard rules:
 - Use ONLY the facts present in the JSON the user provides. Do not invent calories, sugar grams, ingredients, or any other nutritional detail.
 - Do not make medical claims, diagnose, or prescribe.
 - Stay food-focused and consumer-friendly.
-- Tone: clear, direct, slightly provocative. Not clinical, not preachy.
+- Tone: clear, decisive, practical. Short sentences. No fluff. No long intros. Avoid "it depends" unless the data really demands it.
 - 350-500 words total. Markdown only.
 - Do NOT wrap your output in fences (no ```markdown). Output raw markdown.
 - Do NOT add any commentary before or after the post.
@@ -736,7 +740,7 @@ Editorial stance — depends on the JSON's `format` field:
 - format == "swap": food_b IS the explicit alternative — recommend it plainly. food_a is what the reader should swap OUT.
 - format == "exposure": food_a only (food_b is null). Surface the gap between how food_a is marketed and what's actually in it.
 
-Forbidden closers in any format: "both are fine," "everything in moderation," "it depends on your goals," "context matters," or any similar punt that avoids taking a stance. Take a stance.
+Forbidden closers in any format: "both are fine," "everything in moderation," "it depends on your goals," "context matters," "can be part of a balanced diet," or any similar punt that avoids taking a stance. Take a stance.
 
 Required structure:
 
@@ -756,27 +760,42 @@ Description rules:
 Then, the body H1 — use the EXACT same title string as the frontmatter:
 # {title verbatim}
 
-A tight 1-2 paragraph intro (not 3) that sets up what's surprising about food_a. For comparison: do not frame the intro as a choice between the two — frame it around food_a's halo, marketing, or hidden tradeoff.
+## Quick Answer
+2-3 concise sentences. Directly answer whether food_a is healthy and how it compares to food_b. No intro paragraph, no fluff — start with the verdict.
 
-Immediately after the intro, on its own line, output a single sentence beginning with the literal bold marker `**Short answer:**`. This is a direct, unhedged answer to the title's "Is X healthy?" question — your editorial verdict on food_a in one line. Example shape: `**Short answer:** Not really — Gatorade's sugar load looks more like soda than a sports drink.`
+## Quick Verdict
+- {food_a_display_name}: X/10
+- {food_b_display_name}: Y/10
 
-Numeric callout (REQUIRED): at least one section below must surface a concrete number from the provided JSON — sugar grams, calories, sodium mg, fiber grams, or a score out of 10. Pull it verbatim from food_a / food_b / their bullets. Do NOT invent numbers.
+Winner: {food_a_display_name | food_b_display_name | neither} — one short sentence explaining why.
 
-## The quick verdict
-State the takeaway about food_a plainly. Cite "{food_a} scored X/10". For comparison and swap, also cite "{food_b} scored Y/10" as a reference point. If food_b is null/missing, only cite food_a.
+Use the score values from the JSON's `food_a.score` and `food_b.score` VERBATIM. Do NOT invent scores. If a food has no score in the JSON, write "(no score)" instead of guessing. Omit the food_b bullet entirely when food_b is null (exposure format) and replace the Winner line with a single short verdict sentence on food_a.
 
-## What hurts {food_a_display_name}
-Use food_a.what_hurts and food_a_bullets verbatim where they appear. Expand briefly but stay grounded in those bullets.
+## Why {food_a_display_name} Falls Short
+3-4 concise bullets, each focused on a nutrition tradeoff: sugar, calories, satiety, protein, fiber, ingredients, processing, sodium, or calorie density. Use food_a.what_hurts and food_a_bullets verbatim where they fit. At least ONE bullet must surface a concrete number pulled from the JSON (e.g. "29.99g of sugar", "180 calories", "85 mg sodium") — never invented.
 
-## Why the comparison matters
-- comparison: explain what food_b's score reveals about food_a — food_b is a yardstick, not a recommendation. Do NOT pivot into a food_b recommendation. food_a stays the subject.
-- swap: name food_b as the better pick and say why, briefly.
-- exposure (food_b is null): re-frame this section as why food_a's marketing claim doesn't hold up against its actual numbers, OR omit it entirely if the post reads cleaner without it.
+## How {food_b_display_name} Compares
+2-3 concise bullets explaining how food_b is better, worse, or similar on the same dimensions. For comparison/exposure: keep food_b as a yardstick, NOT a recommendation. For swap: name food_b as the recommended alternative and say why.
 
-## Bottom line
-- comparison: a sharp, opinionated takeaway about food_a — what this reveals, who shouldn't bother with it, or when it's actually fine. Do NOT recommend food_b. Do NOT use "everything in moderation," "both are fine," or any forbidden closer listed above.
-- swap: name food_b as the better choice for this purpose.
-- exposure: name what's misleading or hidden about food_a.
+If food_b is null (exposure format), replace this entire section with `## What's Hidden in {food_a_display_name}` — 2-3 bullets surfacing the gap between food_a's marketing claim and its actual numbers.
+
+## Best Choice Based on Your Goal
+Use these three rows verbatim, each followed by one short verdict (a phrase or one short sentence). For comparison/exposure, the verdict can be "neither — pick a real alternative" or similar:
+- **Weight loss:** {short verdict}
+- **Energy / satiety:** {short verdict}
+- **Occasional treat:** {short verdict}
+
+## Better Alternatives
+3-5 bullets, each a real, recognizable food (plain Greek yogurt, whole orange, plain oatmeal, hard-boiled egg, unsweetened sparkling water, etc.) with a one-line reason. No invented brands, no gimmicks.
+
+After the Better Alternatives bullets, on its own paragraph (NOT a heading, NOT a bullet, NOT a blockquote), output this sentence VERBATIM:
+
+Want a faster way to find better swaps? SmarterEats lets you compare foods and discover healthier options instantly.
+
+## Bottom Line
+2-3 concise sentences summarizing the practical decision. Take a clear stance about food_a. Do NOT recommend food_b unless format == "swap". Do NOT use any forbidden closer.
+
+Do NOT generate a "## Related Comparisons" or "## Related" section yourself. That section is appended programmatically after your output from a curated list of already-published posts. Stop after the Bottom Line section.
 """
 
 
@@ -1021,7 +1040,7 @@ def write_blog_posts_from_inputs(
         if related_lines:
             markdown = (
                 markdown.rstrip()
-                + "\n\n## Related\n\n"
+                + "\n\n## Related Comparisons\n\n"
                 + "\n".join(related_lines)
                 + "\n"
             )
