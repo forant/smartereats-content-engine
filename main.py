@@ -290,7 +290,7 @@ def resolve_names(row: dict) -> tuple[str, str, str, str]:
 # Format detection
 # ---------------------------------------------------------------------------
 
-VALID_FORMATS = ("comparison", "exposure", "swap", "ranking")
+VALID_FORMATS = ("comparison", "exposure", "swap", "ranking", "evaluation")
 
 
 def resolve_format(row: dict) -> str:
@@ -453,6 +453,8 @@ def select_headline_mode(
         return "swap"
     if fmt == "exposure":
         return "exposure"
+    if fmt == "evaluation":
+        return "evaluation"
     if score_a is None or score_b is None:
         return "shock"  # safe fallback
     diff = abs(score_a - score_b)
@@ -489,8 +491,15 @@ def generate_headline_deterministic(
         return "", ""
 
     mode = select_headline_mode(fmt, score_a, score_b, halo)
-    _, _, a_label, b_label = resolve_names(row)
+    a_display, _, a_label, b_label = resolve_names(row)
     pair_id = clean_cell(row.get("pair_id"))
+
+    # Evaluation posts use the deterministic SEO title as the headline —
+    # the prompt is keyed on it, the cards card don't render this format
+    # (we run with --no-cards for evaluations), and there's no comparison
+    # template that fits a single-food "Is X Healthy?" question.
+    if mode == "evaluation":
+        return _evaluation_title(a_display or a_label), mode
 
     if mode == "dominance":
         # food_b is always present in this branch (mode selection requires
@@ -574,6 +583,19 @@ def postability_score(
             score += 1
         if score_a <= 3:
             score += 1
+    elif fmt == "evaluation":
+        # Single-food evaluation posts target search queries directly, so
+        # they don't need a comparison-driven hook to clear the postability
+        # gate. Bonus when the score reveals a clear angle (very low or very
+        # high), or when there's a halo to debunk.
+        if halo:
+            score += 2
+        if score_a is not None and (score_a <= 3 or score_a >= 8):
+            score += 2
+        elif score_a is not None and (score_a <= 5 or score_a >= 7):
+            score += 1
+        # Floor: every evaluation that has a real score is worth posting.
+        score = max(score, 7)
     elif fmt == "swap":
         if score_b is not None:
             diff = score_b - score_a
@@ -800,6 +822,85 @@ Do NOT generate a "## Related Comparisons" or "## Related" section yourself. Tha
 """
 
 
+_EVALUATION_SYSTEM_PROMPT = """You write single-food evaluation blog posts for SmarterEats — answers to consumer queries like "Is popcorn healthy?" or "Are protein bars healthy?".
+
+Hard rules:
+- Use ONLY the facts present in the JSON the user provides. Do not invent calories, sugar grams, ingredients, sodium, or any other nutritional detail.
+- Do not make medical claims, diagnose, or prescribe.
+- Stay food-focused and consumer-friendly.
+- Tone: clear, decisive, practical. Short sentences. Concrete reasoning. No long intros.
+- 400-600 words total. Markdown only.
+- Do NOT wrap your output in fences (no ```markdown). Output raw markdown.
+- Do NOT add any commentary before or after the post.
+
+Editorial stance:
+- The post answers ONE query: "Is/Are {food} healthy?" — a question the reader is searching for.
+- Frame healthiness as goal-dependent, NOT absolute. Whether the food is healthy depends on the eater's goal, portion size, and what they're comparing it to.
+- Be nuanced — a flat "yes" or "no" is the wrong answer. Lay out tradeoffs explicitly.
+- Tie back to SmarterEats' loop: set a goal → track against it → make better food decisions.
+- Keep comparative framing even though there's only one food: "Compared to chips...", "Higher in protein than...", "More filling than..." (use real categories, not invented brands). This boosts retrieval depth and gives the AI surface for related links later.
+
+Forbidden phrases: "everything in moderation," "balanced diet," "context matters," "can be part of a healthy lifestyle," "not necessarily bad," "in a balanced diet." Use "it depends" only when paired with concrete reasoning, never as a punt.
+
+Each major section must stand on its own — assume an AI search engine may surface a single section in isolation. That means:
+- Reference the food by name in every section (don't lean on prior context).
+- Give concrete reasoning (numbers from the JSON, named tradeoffs).
+- No section should read as filler.
+
+Required structure:
+
+YAML frontmatter at the very top — exactly these three fields, no others:
+---
+title: "{the title is provided in the user message — use it verbatim, including the question mark}"
+description: "{1-sentence SEO blurb, ≤160 chars, no quotes inside}"
+date: "{provided date YYYY-MM-DD}"
+---
+
+Description rules:
+- Exactly one sentence.
+- Must include the exact phrase "Is {food_a_display_name} healthy" or "Are {food_a_display_name} healthy" matching the title's verb.
+- Goal-aware: hint at when the food works (or doesn't) for a typical goal — weight loss, satiety, energy, protein.
+- Slightly curiosity-driven, never a punt.
+- Example: "Is popcorn healthy? Learn when popcorn is a smart snack, when it can work against your goals, and how it compares to other common snacks."
+
+Body H1 — verbatim title:
+# {title verbatim}
+
+## Quick Answer
+2-3 sentences. Lead with a direct, natural-language answer using the food's name verbatim. Pattern: "{Food} can be a relatively healthy [snack/option] depending on…" or "{Food} is a mixed bag — fine for X, not for Y." No filler intro.
+
+## Nutrition Snapshot
+A short paragraph (1-2 sentences) framing the food's profile, followed by a bullet list of headline numbers pulled VERBATIM from the JSON: calories per serving, protein g, fiber g, sugar g, sodium mg (only include what's present). Include the food's score as "Overall score: X/10". Do NOT invent numbers — if a value is missing from the JSON, omit that bullet.
+
+## What Makes {food_a_display_name} a Good Choice
+2-4 bullets grounded in food_a.what_helps and food_a_bullets where they fit. Be concrete: protein, fiber, satiety, calorie density, processing level, ingredient quality. If the score is ≤4/10, keep this section short and honest — don't manufacture positives.
+
+## Potential Downsides
+2-4 bullets grounded in food_a.what_hurts and food_a_bullets where they fit. At least ONE bullet must surface a concrete number from the JSON ("29.99g of sugar", "180 calories", "85 mg sodium"). Be specific about what makes the downside material — a sugar/sodium/processing concern, not a vague "could be better".
+
+## How {food_a_display_name} Fits Different Goals
+Use these four rows verbatim, each followed by 1-2 sentences of practical guidance grounded in the food's actual numbers. Use language like "Good fit if…", "Less ideal if…", "Watch out for…":
+- **Weight loss / calorie control:** {goal-specific verdict}
+- **High protein / muscle support:** {goal-specific verdict}
+- **Energy / satiety / blood sugar stability:** {goal-specific verdict}
+- **Heart health / lower sodium / less processed eating:** {goal-specific verdict}
+
+Each verdict must reference at least one concrete attribute (a number from the JSON, or a category like "ultra-processed", "low fiber"). Avoid generic claims.
+
+## Healthier or Better Alternatives
+3-5 bullets, each a real, recognizable food (plain Greek yogurt, whole orange, plain oatmeal, hard-boiled egg, unsweetened sparkling water, etc.) with a one-line reason that compares back to {food_a_display_name}: "Higher in protein", "Less added sugar", "More filling per calorie", "Less processed". At least 2 bullets MUST include an explicit comparative phrase that names {food_a_display_name}. No invented brands, no gimmicks.
+
+After the alternatives bullets, on its own paragraph (NOT a heading, NOT a bullet, NOT a blockquote), output this sentence VERBATIM:
+
+Want a faster way to find better swaps? SmarterEats lets you compare foods and discover healthier options instantly.
+
+## Final Verdict
+2-3 sentences. End with the goal-dependent framing — explicitly include a sentence like: "Whether {food_a_display_name} is a good choice depends on your goal, portion size, and what you're comparing it to." Then a clear one-line stance: who should keep it in their rotation, who should be cautious. Take a stance — never punt.
+
+Do NOT generate a "## Related Comparisons" or "## Related" section yourself. That section is appended programmatically after your output from a curated list of already-published posts. Stop after the Final Verdict section.
+"""
+
+
 def _slugify_for_blog(text: str, max_len: int = 60) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
     return s[:max_len].rstrip("-") or "post"
@@ -833,6 +934,49 @@ def _seo_title(food_a_display: str, food_b_display: str) -> str:
     if b and b.lower() != a.lower():
         return f"Is {a_tc} Healthy? ({a_tc} vs {_smart_title_case(b)})"
     return f"Is {a_tc} Healthy?"
+
+
+# Word endings strong enough to flip "Is" → "Are" in the evaluation title.
+# Curated to common food categories; brand-ish names ending in 's' (Doritos,
+# Skittles, Cheerios) stay singular and get "Is".
+_PLURAL_FOOD_ENDINGS: frozenset[str] = frozenset({
+    "bars", "chips", "cookies", "crackers", "snacks", "flakes", "gummies",
+    "pops", "wraps", "rolls", "puffs", "cubes", "nuggets", "sticks",
+    "wedges", "strips", "fries", "pretzels", "berries", "grapes",
+    "olives", "pickles", "tomatoes", "beans", "lentils", "oats",
+    "raisins", "nuts", "seeds", "greens", "veggies",
+})
+
+
+def _is_plural_food_name(name: str) -> bool:
+    """Decide between 'Is' and 'Are' for evaluation titles. Heuristic on
+    the last word of the food name — covers common categories without a
+    full grammar engine. Brand-ish names ending in 's' stay singular."""
+    if not name:
+        return False
+    parts = name.strip().lower().split()
+    if not parts:
+        return False
+    return parts[-1] in _PLURAL_FOOD_ENDINGS
+
+
+def _evaluation_title(food_display: str) -> str:
+    """SEO title for single-food evaluation posts: 'Is X Healthy?' for
+    singular / mass nouns and brand names, 'Are X Healthy?' for plural
+    food categories (chips, bars, cookies, etc.)."""
+    a = (food_display or "").strip() or "This Food"
+    a_tc = _smart_title_case(a)
+    verb = "Are" if _is_plural_food_name(a) else "Is"
+    return f"{verb} {a_tc} Healthy?"
+
+
+def _evaluation_slug(food_display: str) -> str:
+    """URL slug for single-food evaluation posts. Mirrors the comparison
+    slug pattern so /blog/<slug> routing stays uniform.
+    e.g. 'is-popcorn-healthy', 'are-protein-bars-healthy'."""
+    a = (food_display or "").strip() or "this food"
+    verb = "are" if _is_plural_food_name(a) else "is"
+    return _slugify_for_blog(f"{verb} {a} healthy")
 
 
 def _seo_slug(food_a_display: str, food_b_display: str) -> str:
@@ -890,15 +1034,28 @@ def generate_blog_post_with_openai(blog_input: dict, title: str, model: str) -> 
     """Call the OpenAI chat-completions API to turn one structured blog
     input into a markdown post. Raises on API errors — the caller logs
     and continues. `title` is computed deterministically by the caller
-    and must appear verbatim in both the frontmatter and the body H1."""
+    and must appear verbatim in both the frontmatter and the body H1.
+
+    The system prompt is selected by the JSON's `format` field:
+    'evaluation' → single-food 'Is X Healthy?' template; everything else
+    (comparison / swap / exposure) → the multi-food template."""
     from openai import OpenAI  # local import so missing dep is handled gracefully
 
     client = OpenAI()  # picks up OPENAI_API_KEY from env
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    fmt = (blog_input.get("format") or "comparison").strip()
+    is_evaluation = fmt == "evaluation"
+    system_prompt = _EVALUATION_SYSTEM_PROMPT if is_evaluation else _BLOG_SYSTEM_PROMPT
+    intro = (
+        "Write the SmarterEats single-food evaluation post."
+        if is_evaluation
+        else "Write the SmarterEats blog post for this comparison."
+    )
+
     payload = {**blog_input, "date": today, "title": title}
     user_msg = (
-        f"Write the SmarterEats blog post for this comparison.\n\n"
+        f"{intro}\n\n"
         f"Use this exact title in BOTH the frontmatter `title:` and the body H1 `#`:\n"
         f"  {title}\n\n"
         "Use only the facts in the JSON below. Output markdown only.\n\n"
@@ -908,7 +1065,7 @@ def generate_blog_post_with_openai(blog_input: dict, title: str, model: str) -> 
     resp = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": _BLOG_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.7,
@@ -974,8 +1131,14 @@ def write_blog_posts_from_inputs(
         food_a_disp = ((blog_input.get("food_a") or {}).get("display_name") or "").strip()
         food_b_disp = ((blog_input.get("food_b") or {}).get("display_name") or "").strip() \
             if blog_input.get("food_b") else ""
-        title = _seo_title(food_a_disp, food_b_disp)
-        slug = _seo_slug(food_a_disp, food_b_disp)
+        # Evaluation posts (single food) use the 'Is/Are X Healthy?' shape;
+        # everything else (comparison/swap/exposure) uses the comparison form.
+        if (blog_input.get("format") or "") == "evaluation":
+            title = _evaluation_title(food_a_disp)
+            slug = _evaluation_slug(food_a_disp)
+        else:
+            title = _seo_title(food_a_disp, food_b_disp)
+            slug = _seo_slug(food_a_disp, food_b_disp)
         out_path = out_dir / f"{slug}.mdx"
         plan.append((json_path, title, out_path, blog_input))
 
@@ -1190,6 +1353,10 @@ def parse_args() -> argparse.Namespace:
                    help="skip scoring and card rendering; only (re)generate "
                         "blog posts from existing output/blog_inputs/. "
                         "Combine with --force to refresh existing posts.")
+    p.add_argument("--no-cards", action="store_true",
+                   help="skip PNG card rendering. Scoring and blog-post "
+                        "generation still run normally — useful when you "
+                        "only care about new .mdx files.")
     return p.parse_args()
 
 
@@ -1334,7 +1501,8 @@ def main() -> int:
         try:
             a_score, a_interp, a_helps, a_hurts, a_err = score_food(
                 conn, backend_base_url, a_display, a_barcode, purpose)
-            if fmt == "exposure":
+            # Single-food formats: only score food_a, leave food_b empty.
+            if fmt in ("exposure", "evaluation"):
                 b_score, b_interp, b_helps, b_hurts, b_err = (None, "", [], [], None)
             else:
                 b_score, b_interp, b_helps, b_hurts, b_err = score_food(
@@ -1525,12 +1693,15 @@ def main() -> int:
             )
 
     # Render PNG cards for status=='ok' rows.
-    try:
-        from cards import render_cards
-        rendered = render_cards("output/results.csv", "output/cards")
-        print(f"\nRendered {rendered} card PNG(s) to output/cards/")
-    except Exception as e:
-        print(f"\nWARNING: card rendering failed: {e}", file=sys.stderr)
+    if args.no_cards:
+        print("\nSkipped card rendering (--no-cards).")
+    else:
+        try:
+            from cards import render_cards
+            rendered = render_cards("output/results.csv", "output/cards")
+            print(f"\nRendered {rendered} card PNG(s) to output/cards/")
+        except Exception as e:
+            print(f"\nWARNING: card rendering failed: {e}", file=sys.stderr)
 
     # Generate markdown blog posts from the blog_inputs JSON via OpenAI.
     # No-ops when OPENAI_API_KEY is unset; never blocks card rendering.

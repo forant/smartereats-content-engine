@@ -42,7 +42,7 @@ CSV_HEADER = [
     "purpose", "framing_type",
 ]
 
-FORMATS = ["comparison", "exposure", "swap"]
+FORMATS = ["comparison", "exposure", "swap", "evaluation"]
 FRAMINGS = ["health_halo", "kids_food", "sugar_shock", "swap", "default"]
 PURPOSES = ["snack", "meal", "post_workout", "treat", "convenience", "ingredient"]
 
@@ -751,6 +751,9 @@ def render_cleaner_mode() -> None:
     if row_format == "exposure":
         cand_label = "Candidate (food_a) — single-item exposure"
         ref_label = ""
+    elif row_format == "evaluation":
+        cand_label = "Candidate (food_a) — single-food evaluation"
+        ref_label = ""
     elif row_format == "swap":
         cand_label = "Candidate (food_a) — swap OUT"
         ref_label = "Alternative (food_b) — PICK THIS"
@@ -769,8 +772,9 @@ def render_cleaner_mode() -> None:
             f"**diff:** `{row.get('score_diff', '?') or '—'}` · "
             f"**angle:** _{row.get('content_angle', '')}_"
         )
-        # Two-column layout when there's a reference; full-width for exposure.
-        if row_format == "exposure":
+        # Two-column layout when there's a reference; full-width for the
+        # single-food formats (exposure / evaluation).
+        if row_format in ("exposure", "evaluation"):
             ccol = st.container()
             rcol = None
         else:

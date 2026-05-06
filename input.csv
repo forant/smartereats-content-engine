@@ -60,3 +60,71 @@ pair_id,format,food_a_name,food_a_display_name,food_a_label,food_a_barcode,food_
 106,comparison,Raisin bran breakfast cereal,Kellogg's Raisin Bran,cereal,38000199875,frosted flakes,Frosted Flakes,sugary cereal,38000181771,breakfast,health_halo
 107,comparison,Blueberry sweetened whole grain oat cereal,Cheerios - Blueberry,cereal,16000149847,frosted flakes,Frosted Flakes,sugary cereal,38000181771,breakfast,health_halo
 108,comparison,Breakfast Biscuit (Cinnamon Oat),BelVita Breakfast Biscuit (Cinnamon Oat),breakfast bar,44000080037,frosted flakes,Frosted Flakes,sugary cereal,38000181771,breakfast,health_halo
+109,evaluation,Snickers,Snickers,candy bar,40000002635,,,,,snack,health_halo
+110,evaluation,Frosted Flakes,Frosted Flakes,sugary cereal,38000181771,,,,,breakfast,health_halo
+111,evaluation,Doritos,Doritos,chips,28400798372,,,,,snack,health_halo
+112,evaluation,Coca-Cola,Coca-Cola,soda,88009900767,,,,,snack,kids_food
+113,evaluation,Açai-Blueberry-Pomegranate XXX Nutrient Enhanced Water,Vitamin Water,vitamin water,786162150004,,,,,snack,sugar_shock
+114,evaluation,Atkinson's Chewy Caramel Bar,Atkinson's Chewy Caramel Bar,granola bar,41168075158,,,,,snack,health_halo
+115,evaluation,BelVita Breakfast Biscuit (Cinnamon Oat),BelVita Breakfast Biscuit (Cinnamon Oat),breakfast bar,44000080037,,,,,breakfast,health_halo
+116,evaluation,Bolthouse Farms Green Goodness Smoothie,Bolthouse Farms Green Goodness Smoothie,healthy smoothie,71464240400,,,,,snack,sugar_shock
+117,evaluation,Cheerios - Blueberry,Blueberry Cheerios,cereal,16000149847,,,,,breakfast,health_halo
+118,evaluation,Chobani Flip S’Mores,Chobani Flip S’Mores,greek yogurt,1829001873,,,,,snack,health_halo
+119,evaluation,Clif Bar,Clif Bar,energy bar,722252028037,,,,,snack,health_halo
+120,evaluation,Clif Bar Builder's Bar Crispy Peanut Butter Chocolate,Builders Bar,energy bar,722252069498,,,,,snack,health_halo
+121,evaluation,Clif Bar Builders Bar,Clif Bar Builders Bar,energy bar,722252069863,,,,,snack,health_halo
+122,evaluation,Clif Bar Chocolate Brownie,Clif Bar Chocolate Brownie,energy bar,722252068514,,,,,snack,health_halo
+123,evaluation,Clif Bar Peanut Butter Banana Dark Chocolate,Clif Bar Peanut Butter Banana Dark Chocolate,energy bar,722252069344,,,,,snack,health_halo
+124,evaluation,Clif Bar White Chocolate Macadamia Nut,Clif Bar White Chocolate Macadamia Nut,energy bar,722252069207,,,,,snack,health_halo
+125,evaluation,CLIF Chocolate Chip,CLIF Chocolate Chip,energy bar,722252068767,,,,,snack,health_halo
+126,evaluation,Coconut Water,Coconut Water,coconut water,810068900651,,,,,snack,sugar_shock
+127,evaluation,Gatorade,Gatorade,sports drink,8001160002981,,,,,snack,sugar_shock
+128,evaluation,Gatorade Frost,Gatorade Frost,sports drink,57271160025,,,,,snack,sugar_shock
+129,evaluation,Go Bio! Organic Sour Fruit Gummies,Go Bio! Organic Sour Fruit Gummies,fruit snacks,687789217012,,,,,snack,kids_food
+130,evaluation,Green Goodness Smoothie,Green Goodness Smoothie,healthy smoothie,71464240400,,,,,snack,sugar_shock
+131,evaluation,Honest Kids Apple Juice,Honest Kids Apple Juice,kids juice,657622419774,,,,,snack,kids_food
+132,evaluation,Kashi Chocolate Chip Chia 7 Grain,Kashi Chocolate Chip Chia 7 Grain Cerel,cereal,18627102564,,,,,breakfast,health_halo
+133,evaluation,Kashi Go Peanut Butter Crunch Cereal,Kashi Go Peanut Butter Crunch Cereal,cereal,18627101390,,,,,breakfast,health_halo
+134,evaluation,Kashi Honey Oat Flax Crunchy 7 Grain With Quinoa Bars,Kashi Honey Oat Flax Bars,cereal,18627102571,,,,,breakfast,health_halo
+135,evaluation,Kashi Trail Mix Chewy Granola Bar,Kashi Trail Mix Chewy Granola Bar,cereal,18627032007,,,,,breakfast,health_halo
+136,evaluation,Kellogg's Raisin Bran,Kellogg's Raisin Bran,cereal,38000199875,,,,,breakfast,health_halo
+137,evaluation,Kettle Corn Popcorners,Kettle Corn Popcorners,popcorn,810607024657,,,,,snack,health_halo
+138,evaluation,Kettle Sweet Sweet Chilli & Sour Cream Chips,Kettle Sweet Sweet Chilli & Sour Cream Chips,chips,9414882453747,,,,,snack,default
+139,evaluation,Kickin' Cheddar Corn Nuts,Kickin' Cheddar Corn Nuts,corn nuts,71159374434,,,,,snack,health_halo
+140,evaluation,KIND Almond Peanut Butter & Dark,KIND Almond Peanut Butter & Dark Chocolate Bars,kind bar,602652170706,,,,,snack,health_halo
+141,evaluation,Kind Banana Nut Clusters,Kind Banana Nut Clusters,kind bar,602652171604,,,,,snack,health_halo
+142,evaluation,Kind Bar,Kind Bars,kind bar,602652170942,,,,,snack,health_halo
+143,evaluation,KIND Caramel Almond With Almonds,KIND Caramel Almond With Almonds Bars,kind bar,602652170300,,,,,snack,health_halo
+144,evaluation,KIND Dark Chocolate Cherry Cashew,KIND Dark Chocolate Cherry Cashew Bars,kind bar,602652170508,,,,,snack,health_halo
+145,evaluation,Kind Healthy Grains Granola Maple Quinoa,Kind Healthy Grains Granola,kind bar,602652171208,,,,,snack,health_halo
+146,evaluation,KIND Raspberry Granola With Chia Seeds,KIND Raspberry Granola With Chia Seeds,kind bar,602652171611,,,,,snack,health_halo
+147,evaluation,KIND Salted Caramel Dark Chocolate Nut,KIND Salted Caramel Dark Chocolate Nut Bars,kind bar,602652170683,,,,,snack,health_halo
+148,evaluation,Kirkland Dipped & Chewy Granola Bar,Kirkland Dipped & Chewy Granola Bars,granola bar,96619192144,,,,,snack,health_halo
+149,evaluation,Kirkland Fruit Snacks,Kirkland Fruit Snacks,fruit snacks,96619498666,,,,,snack,kids_food
+150,evaluation,MadeGood Organic Chewy Granola Bar,MadeGood Organic Chewy Granola Bars,granola bar,687456211015,,,,,snack,health_halo
+151,evaluation,MadeGood Organic Chocolate Chip Rice Crispy Squares,MadeGood Organic Chocolate Chip Rice Crispy Squares,organic snack,687456211275,,,,,snack,health_halo
+152,evaluation,Naked Juice Mango Machine,Naked Juice Mango Machine,smoothie,5022313318677,,,,,snack,sugar_shock
+153,evaluation,Nature Valley Coconut Almond Granola,Nature Valley Coconut Almond Granola,granola bar,16000156746,,,,,snack,health_halo
+154,evaluation,Nature Valley Dark Chocolate Peanut & Almond Chewy Granola Bars,Nature Valley Dark Chocolate Peanut & Almond Chewy Granola Bars,granola bar,16000146655,,,,,snack,health_halo
+155,evaluation,Nature Valley Peanut Butter Chocolate Granola,Nature Valley Peanut Butter Chocolate Granola Bars,granola bar,16000137639,,,,,snack,health_halo
+156,evaluation,Nature Valley Salted Caramel Nut Chewy Bars,Nature Valley Salted Caramel Nut Chewy Bars,granola bar,16000149960,,,,,snack,health_halo
+157,evaluation,Nature Valley Sweet And Salty Nut,Nature Valley Sweet And Salty Nut Bars,granola bar,16000102125,,,,,snack,health_halo
+158,evaluation,Nature Valley Sweet & Salty Nut Cashew Chewy Granola Bars,Nature Valley Sweet & Salty Nut Cashew Chewy Granola Bars,granola bar,16000168930,,,,,snack,health_halo
+159,evaluation,Nature Valley Trail Mix Chewy Granola Bars,Nature Valley Trail Mix Chewy Granola Bars,granola bar,16000160576,,,,,snack,health_halo
+160,evaluation,Plain Greek Yogurt,Plain Greek Yogurt,plain greek yogurt,894700010434,,,,,snack,sugar_shock
+161,evaluation,Pop Corners Sea Salt,Sea Salt Popcorners,popcorn chips,60410056189,,,,,snack,health_halo
+162,evaluation,Quaker Chewy Granola Bar S’mores,S'Mores Quaker Chewy Granola Bars,granola bar,61589114021,,,,,snack,health_halo
+163,evaluation,Quaker Maple & Brown Sugar Instant Oatmeal,Quaker Maple & Brown Sugar Instant Oatmeal,oatmeal,30000011904,,,,,breakfast,health_halo
+164,evaluation,Quaker Peaches & Cream Instant Oatmeal,Quaker Peaches & Cream Instant Oatmeal,oatmeal,30000018002,,,,,breakfast,health_halo
+165,evaluation,RXBAR Dark Chocolate Peanut Butter,RXBAR Dark Chocolate Peanut Butter,protein bar,193908007797,,,,,snack,health_halo
+166,evaluation,Rxbar Honey Cinnamon Peanut Butter,Rxbar Honey Cinnamon Peanut Butter,protein bar,193908007780,,,,,snack,health_halo
+167,evaluation,RXBAR MINIS Nut Butter & Oat,RXBAR MINIS Nut Butter & Oat,protein bar,193908007896,,,,,snack,health_halo
+168,evaluation,RXBAR Minis Peanut Butter Chocolate,RXBAR Minis Peanut Butter Chocolate,protein bar,143739,,,,,snack,health_halo
+169,evaluation,RXBAR Nut Butter & Oat Blueberry Cashew,RXBAR Nut Butter & Oat Blueberry Cashew,protein bar,193908005113,,,,,snack,health_halo
+170,evaluation,Skittles,Skittles,candy,22000018465,,,,,snack,kids_food
+171,evaluation,Special K Brown Sugar Cinnamon Pastry Crisps,Special K Brown Sugar Cinnamon Pastry Crisps,diet cereal,38000167713,,,,,breakfast,health_halo
+172,evaluation,Special K Pastry Crisps,Special K Pastry Crisps,diet cereal,38000167751,,,,,breakfast,health_halo
+173,evaluation,Special K Red Berries,Special K Red Berries,diet cereal,41192102233,,,,,breakfast,health_halo
+174,evaluation,Triscuit Classic Wheat Crackers,Triscuit Classic Wheat Crackers,crackers,66721028174,,,,,snack,health_halo
+175,evaluation,Vitaminwater Zero Squeezed Lemonade,Vitaminwater Zero Squeezed Lemonade,vitamin water,786162003508,,,,,snack,sugar_shock
+176,evaluation,White Cheddar Popcorners,White Cheddar Popcorners,popcorn,810607020932,,,,,snack,health_halo

@@ -204,12 +204,14 @@ python main.py
 
 ## Discovery + cleanup workflow
 
-The system has three responsibilities, kept in separate scripts:
+The system has these responsibilities, kept in separate scripts:
 
 ```
 discover_candidates.py   → discover and score promising comparisons
+discover_evaluations.py  → propose single-food "Is X Healthy?" posts
 input_builder.py         → review / clean / approve into input.csv
-main.py                  → render cards + write blog inputs
+main.py                  → score, render cards, write blog inputs + .mdx posts
+audit_blog_posts.py      → validate staged .mdx (sections, links, dupes)
 ```
 
 ### 1. Discover candidates
@@ -261,6 +263,94 @@ the queue.
 Once `input.csv` has the rows you want, run `main.py` as before to score,
 write `output/results.csv`, generate the per-row blog inputs JSON, and
 render the PNG cards.
+
+### 4. Single-food "Is X Healthy?" posts (evaluations)
+
+Comparison posts answer "X vs Y"; **evaluation** posts answer the more
+common search query "Is X healthy?" / "Are X healthy?" with goal-aware
+analysis. They reuse the same scoring pipeline, slug machinery, and
+internal-linking system.
+
+The `format` column on a row in `input.csv` selects the post type:
+
+```
+format=comparison  → "Is X Healthy? (X vs Y)"  body uses comparison template
+format=swap        → "Is X Healthy? (X vs Y)"  body recommends Y as the swap
+format=exposure    → "Is X Healthy?"           body exposes the halo on X
+format=evaluation  → "Is/Are X Healthy?"       single-food, goal-aware
+```
+
+`format=evaluation` rows have `food_b_*` empty. The evaluation prompt
+covers Quick Answer · Nutrition Snapshot · What Makes X a Good Choice ·
+Potential Downsides · How X Fits Different Goals (weight loss / protein /
+energy / heart) · Healthier Alternatives · Final Verdict — and frames
+"healthy" as goal-dependent, never absolute.
+
+**Discover candidates** from the existing comparison corpus:
+
+```
+./venv/bin/python discover_evaluations.py                   # dry-run preview
+./venv/bin/python discover_evaluations.py --limit 20        # top 20 candidates
+./venv/bin/python discover_evaluations.py --csv output/evaluation_candidates.csv
+./venv/bin/python discover_evaluations.py --append-to-input # add directly to input.csv
+```
+
+The script walks `input.csv` for unique foods, normalizes (strips
+`Original` / `Family Size` / `12 oz` style noise), dedupes, skips foods
+whose normalized name is already covered by an evaluation row, and
+proposes titles + slugs. Generic single-word categories (`smoothie`,
+`yogurt`, `snack`) are filtered by default — pass `--include-vague` to
+keep them.
+
+**Generate** evaluation posts the same way as comparison posts — the
+flag-based `main.py` flow handles them transparently:
+
+```
+./venv/bin/python main.py            # scores + writes blog_inputs + .mdx
+./venv/bin/python main.py --blog-only   # regen .mdx from existing blog_inputs
+./venv/bin/python main.py --force       # ignore caches; re-score everything
+```
+
+Slug shape is `is-popcorn-healthy.mdx` for singular / mass-noun foods and
+`are-protein-bars-healthy.mdx` for plural categories. The is/are choice
+is deterministic from the last word of the food name (curated plural
+endings: `bars`, `chips`, `cookies`, `crackers`, `flakes`, `gummies`, …).
+Brand-style names ending in `s` (Doritos, Skittles, Cheez-Its) stay
+singular and get `Is`.
+
+### 5. Audit staged posts
+
+Before copying `.mdx` files into the website, run the auditor:
+
+```
+export WEBSITE_BLOG_DIR="/path/to/smartereats-website/content/blog"
+./venv/bin/python audit_blog_posts.py
+```
+
+It walks `output/blog_posts/` (or specific files) and reports:
+
+- frontmatter has all three required fields
+- frontmatter `title:` matches the body H1
+- required H2 sections per format (auto-detected by section presence)
+- `<RelatedPosts slugs="…"/>` only references slugs in `WEBSITE_BLOG_DIR`
+- inline `[text](/blog/slug)` links resolve in `WEBSITE_BLOG_DIR`
+- no duplicate slugs across staged posts
+- no duplicate evaluation topics under different grammar (e.g.
+  `is-cheerios-healthy` and `are-cheerios-healthy`)
+- no forbidden filler (`balanced diet`, `everything in moderation`, etc.)
+
+Exits non-zero if any error-level issue is found.
+
+### 6. Tests
+
+```
+./venv/bin/python -m unittest discover -s tests
+```
+
+Covers grammar / title / slug helpers, comparison-helper backward
+compatibility, food-name normalization + dedup, vague-name filtering,
+candidate extraction from a synthetic input.csv, and Related-section
+slug safety.
 
 ## Output
 
