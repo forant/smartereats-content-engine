@@ -856,9 +856,18 @@ description: "{1-sentence SEO blurb, ≤160 chars, no quotes inside}"
 date: "{provided date YYYY-MM-DD}"
 ---
 
+Title grammar — Is vs. Are:
+The frontmatter `title:` and body H1 are provided in the user message and MUST be used verbatim — do not "correct" the verb. The title was constructed deterministically using these rules so it stays in sync with the URL slug and the rest of the post:
+
+- The verb agrees with the SUBJECT'S HEAD NOUN, not surrounding modifiers.
+- "Are" when the head is plural: brands like Doritos, Skittles, Cheerios, Pringles, Pop-Tarts, Triscuits, Pop Corners, Frosted Flakes; common-noun heads like Bars, Crackers, Crisps, Cookies, Gummies, Squares, Berries, Clusters, Nuts, Chips, Snacks, Straws, Seeds, Almonds.
+- "Is" when the head is singular or uncountable: brands ending in -s that are still grammatically singular (Snickers, Gogurt, Fruifuls, Reese's, M&M's, Rice Krispies); singular product types where a plural word is just a modifier ("Cheerios Protein Bar" → head "Bar"; "Quaker Granola Bar S'mores" → head "Bar"); uncountable substances ("Oatmeal", "Cereal", "Yogurt").
+
+The description's opening verb (when it begins with "Is/Are") MUST match the title's verb. Frontmatter `title:`, the H1 `# `, and the description's leading verb all agree.
+
 Description rules:
 - Exactly one sentence.
-- Must include the exact phrase "Is {food_a_display_name} healthy" or "Are {food_a_display_name} healthy" matching the title's verb.
+- Must include the exact phrase "Is {food_a_display_name} healthy" or "Are {food_a_display_name} healthy" — the verb must match the title's verb verbatim.
 - Goal-aware: hint at when the food works (or doesn't) for a typical goal — weight loss, satiety, energy, protein.
 - Slightly curiosity-driven, never a punt.
 - Example: "Is popcorn healthy? Learn when popcorn is a smart snack, when it can work against your goals, and how it compares to other common snacks."
@@ -936,27 +945,81 @@ def _seo_title(food_a_display: str, food_b_display: str) -> str:
     return f"Is {a_tc} Healthy?"
 
 
-# Word endings strong enough to flip "Is" → "Are" in the evaluation title.
-# Curated to common food categories; brand-ish names ending in 's' (Doritos,
-# Skittles, Cheerios) stay singular and get "Is".
+# Plural-form common-noun heads. When the LAST word of the food name is one
+# of these, the title takes "Are X Healthy?".
 _PLURAL_FOOD_ENDINGS: frozenset[str] = frozenset({
-    "bars", "chips", "cookies", "crackers", "snacks", "flakes", "gummies",
-    "pops", "wraps", "rolls", "puffs", "cubes", "nuggets", "sticks",
-    "wedges", "strips", "fries", "pretzels", "berries", "grapes",
-    "olives", "pickles", "tomatoes", "beans", "lentils", "oats",
-    "raisins", "nuts", "seeds", "greens", "veggies",
+    "almonds", "bars", "berries", "cubes", "chips", "clusters", "cookies",
+    "crackers", "crisps", "flakes", "fries", "gummies", "lentils",
+    "nuggets", "nuts", "olives", "oats", "pickles", "pops", "pretzels",
+    "puffs", "raisins", "rolls", "seeds", "snacks", "squares", "sticks",
+    "straws", "strips", "tomatoes", "veggies", "wedges", "wraps",
+    "grapes", "greens", "beans",
+})
+
+# Brands that are grammatically plural even though they're proper nouns —
+# always take "Are X Healthy?". Match against the FULL food name in lower
+# case (so "Cheerios" matches but "Cheerios Protein Bar" doesn't, since
+# its head noun is "bar").
+_PLURAL_TREATED_BRANDS: frozenset[str] = frozenset({
+    "cheerios", "cheez-its", "cheez its", "doritos", "skittles", "pringles",
+    "pop-tarts", "pop tarts", "pop corners", "popcorners", "triscuits",
+    "frosted flakes", "rxbar minis", "welch's fruit snacks",
+})
+
+# Brands whose name ends in -s but is grammatically singular — always take
+# "Is X Healthy?", even though English would normally treat the trailing -s
+# as plural. Match against the FULL food name in lower case.
+_SINGULAR_BRANDS_ENDING_S: frozenset[str] = frozenset({
+    "snickers", "gogurt", "fruifuls", "reese's", "reeses", "m&m's", "m&ms",
+    "rice krispies",  # "Krispies" is plural-form but the brand reads singular
 })
 
 
 def _is_plural_food_name(name: str) -> bool:
-    """Decide between 'Is' and 'Are' for evaluation titles. Heuristic on
-    the last word of the food name — covers common categories without a
-    full grammar engine. Brand-ish names ending in 's' stay singular."""
+    """Decide between 'Is' and 'Are' for evaluation titles. The verb agrees
+    with the head noun (last meaningful word), NOT with surrounding
+    modifiers. Decision order:
+
+    1. Whole name matches a known plural-treated brand → 'Are'.
+    2. Whole name matches a known singular brand ending in -s → 'Is'.
+    3. Last word is a plural-form common noun → 'Are'.
+    4. Default → 'Is' (safe fallback for mass nouns and most singular brands).
+
+    Examples:
+    - 'Doritos'                       → True  ('Are Doritos Healthy?')
+    - 'Snickers'                      → False ('Is Snickers Healthy?')
+    - 'Welch\\'s Fruit Snacks'         → True  (head 'snacks' is plural)
+    - 'Cheerios Protein Bar'          → False (head 'bar' is singular;
+                                              'Cheerios' is a modifier)
+    - 'Kashi Honey Oat Flax Bars'     → True  (head 'bars' is plural)
+    - 'Quaker Maple & Brown Sugar Instant Oatmeal' → False (mass noun)"""
     if not name:
         return False
-    parts = name.strip().lower().split()
+    s = name.strip().lower()
+    if not s:
+        return False
+    if s in _PLURAL_TREATED_BRANDS:
+        return True
+    if s in _SINGULAR_BRANDS_ENDING_S:
+        return False
+    parts = s.split()
     if not parts:
         return False
+
+    # 'X with Xs' / 'X & Xs' / 'X and Xs' pattern — when the trailing plural
+    # word is just an echo of the singular head ('Almond With Almonds'),
+    # the singular form is the actual head and the title takes 'Is'. We
+    # walk through every connector occurrence so this works even when the
+    # 'with X' clause isn't right at the end.
+    for connector in ("with", "and", "&"):
+        for i, part in enumerate(parts):
+            if part != connector or i == 0:
+                continue
+            pre = parts[i - 1]
+            post_last = parts[-1]
+            if pre and post_last == pre + "s":
+                return pre in _PLURAL_FOOD_ENDINGS
+
     return parts[-1] in _PLURAL_FOOD_ENDINGS
 
 

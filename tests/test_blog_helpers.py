@@ -43,13 +43,75 @@ class TestEvaluationGrammar(unittest.TestCase):
                 f"{food!r} should be treated as plural",
             )
 
-    def test_brands_ending_in_s_stay_singular(self):
-        # Brand-ish names ending in 's' are not in the plural endings set,
-        # so they get "Is".
-        for brand in ("Doritos", "Skittles", "Cheez-Its", "M&M's"):
+    def test_plural_treated_brands(self):
+        # Brand names that look plural and ARE plural-treated.
+        for brand in ("Doritos", "Skittles", "Cheerios", "Cheez-Its",
+                      "Pringles", "Pop-Tarts", "Pop Corners", "Triscuits"):
+            self.assertTrue(
+                main._is_plural_food_name(brand),
+                f"plural-treated brand {brand!r} should be 'Are'",
+            )
+
+    def test_singular_brands_ending_in_s(self):
+        # Brand names ending in -s that read as singular.
+        for brand in ("Snickers", "Gogurt", "Fruifuls", "Reese's", "M&M's"):
             self.assertFalse(
                 main._is_plural_food_name(brand),
-                f"brand {brand!r} should stay singular",
+                f"singular brand {brand!r} should stay 'Is'",
+            )
+
+    def test_head_noun_wins_over_modifier(self):
+        # 'Cheerios Protein Bar' — Cheerios is a modifier, head is 'Bar'.
+        self.assertFalse(
+            main._is_plural_food_name("Cheerios Protein Bar"),
+            "head noun 'Bar' is singular even though modifier is plural",
+        )
+        # 'Welch's Fruit Snacks' — head is 'Snacks'.
+        self.assertTrue(
+            main._is_plural_food_name("Welch's Fruit Snacks"),
+            "head noun 'Snacks' is plural",
+        )
+        # 'Kashi … Bars' — head is 'Bars' (plural).
+        self.assertTrue(
+            main._is_plural_food_name(
+                "Kashi Honey Oat Flax Crunchy 7 Grain With Quinoa Bars"
+            )
+        )
+        # 'Quaker … Granola Bar S'mores' — head is 'Bar S'mores'? No, head
+        # noun is 'Bar' modified by 'S'mores'. Last word here is "s'mores"
+        # which has no -s plural marker → falls through to default Is.
+        self.assertFalse(
+            main._is_plural_food_name("Quaker Chewy Granola Bar S'mores")
+        )
+
+    def test_x_with_xs_pattern(self):
+        # 'X with Xs' — trailing plural is a modifier echoing the head.
+        # Head is the pre-connector singular word.
+        self.assertFalse(
+            main._is_plural_food_name("KIND Caramel Almond With Almonds"),
+            "head 'Almond' is singular; 'Almonds' is the modifier",
+        )
+        # Same idea with '&' / 'and'.
+        self.assertFalse(
+            main._is_plural_food_name("Cashew & Cashews Mix"),
+        )
+
+    def test_with_clause_not_modifier_echo(self):
+        # 'With Quinoa Bars' — 'Bars' is NOT the plural of 'Grain' (the
+        # word before 'with'), so the connector-stripping heuristic
+        # does NOT fire and the last word ('Bars') wins.
+        self.assertTrue(
+            main._is_plural_food_name(
+                "Kashi Honey Oat Flax Crunchy 7 Grain With Quinoa Bars"
+            )
+        )
+
+    def test_uncountable_substances(self):
+        for food in ("Quaker Maple & Brown Sugar Instant Oatmeal",
+                     "Special K Fruit & Yogurt", "Greek Yogurt", "Oat Milk"):
+            self.assertFalse(
+                main._is_plural_food_name(food),
+                f"uncountable {food!r} should be 'Is'",
             )
 
     def test_empty_input(self):
