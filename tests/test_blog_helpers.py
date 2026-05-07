@@ -267,6 +267,82 @@ class TestCollectUniqueFoods(unittest.TestCase):
         self.assertIn("snickers", already)
 
 
+class TestTopicsField(unittest.TestCase):
+    """The `topics:` frontmatter field must only ever reference slugs that
+    exist in WEBSITE_TOPICS_DIR — referencing an unknown slug fails the
+    website build."""
+
+    BASE = (
+        '---\n'
+        'title: "Are Protein Bars Healthy?"\n'
+        'description: "..."\n'
+        'date: "2026-05-06"\n'
+        'topics: {topics}\n'
+        '---\n\n'
+        '# Are Protein Bars Healthy?\n\nbody.'
+    )
+
+    def test_keeps_valid_topics(self):
+        md = self.BASE.format(topics='["protein-bars", "high-protein-snacks"]')
+        out, dropped = main._validate_topics_field(
+            md, ["protein-bars", "high-protein-snacks", "weight-loss"],
+        )
+        self.assertIn('topics: ["protein-bars", "high-protein-snacks"]', out)
+        self.assertEqual(dropped, [])
+
+    def test_strips_unknown_topics(self):
+        md = self.BASE.format(topics='["protein-bars", "fake-hub", "high-protein-snacks"]')
+        out, dropped = main._validate_topics_field(
+            md, ["protein-bars", "high-protein-snacks"],
+        )
+        self.assertIn('topics: ["protein-bars", "high-protein-snacks"]', out)
+        self.assertEqual(dropped, ["fake-hub"])
+
+    def test_drops_line_when_all_invalid(self):
+        md = self.BASE.format(topics='["fake-1", "fake-2"]')
+        out, dropped = main._validate_topics_field(md, ["protein-bars"])
+        self.assertNotIn("topics:", out)
+        self.assertEqual(set(dropped), {"fake-1", "fake-2"})
+
+    def test_strips_when_no_allowlist(self):
+        # Empty allowlist = no topics dir configured. Drop any topics line.
+        md = self.BASE.format(topics='["something"]')
+        out, dropped = main._validate_topics_field(md, [])
+        self.assertNotIn("topics:", out)
+        self.assertEqual(dropped, ["something"])
+
+    def test_no_topics_line_no_op(self):
+        md = (
+            '---\n'
+            'title: "Are Protein Bars Healthy?"\n'
+            'description: "..."\n'
+            'date: "2026-05-06"\n'
+            '---\n\nbody.'
+        )
+        out, dropped = main._validate_topics_field(md, ["protein-bars"])
+        self.assertEqual(out, md)
+        self.assertEqual(dropped, [])
+
+
+class TestPublishedTopicsIndex(unittest.TestCase):
+    def test_unset_returns_empty(self):
+        self.assertEqual(main.load_published_topics_index(None), [])
+        self.assertEqual(main.load_published_topics_index(""), [])
+
+    def test_invalid_path_warns_and_returns_empty(self):
+        # Doesn't raise; prints a warning to stderr.
+        self.assertEqual(
+            main.load_published_topics_index("/no-such-path-xyz"), []
+        )
+
+    def test_lists_mdx_and_md_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("protein-bars.mdx", "weight-loss.md", "ignored.txt"):
+                Path(tmp, name).write_text("---\ntitle: t\n---\n")
+            slugs = main.load_published_topics_index(tmp)
+            self.assertEqual(slugs, ["protein-bars", "weight-loss"])
+
+
 class TestRelatedSlugSafety(unittest.TestCase):
     """The Related Comparisons assembly must only emit slugs that exist
     in the published index."""
@@ -295,6 +371,120 @@ class TestRelatedSlugSafety(unittest.TestCase):
         out = main._pick_related_slugs(published, "x", 0, n=3)
         for slug in out:
             self.assertIn(slug, published)
+
+
+class TestAuditorLanguageGuardrails(unittest.TestCase):
+    """The auditor must catch disease claims as errors and fear/absolute
+    language as warnings — per the SmarterEats editorial spec."""
+
+    def setUp(self):
+        from audit_blog_posts import (
+            DISEASE_CLAIM_PATTERNS,
+            FEAR_RHETORIC_PATTERNS,
+            ABSOLUTE_LANGUAGE_PATTERNS,
+            _scan_patterns,
+        )
+        self.scan = _scan_patterns
+        self.disease = DISEASE_CLAIM_PATTERNS
+        self.fear = FEAR_RHETORIC_PATTERNS
+        self.absolutes = ABSOLUTE_LANGUAGE_PATTERNS
+
+    # ---- disease / treatment claims (must fire → ERROR) ----
+    def test_disease_treatment_verbs_flagged(self):
+        for phrase in [
+            "prevents heart disease",
+            "treats diabetes",
+            "cures cancer",
+            "reverses insulin resistance",
+            "fights inflammation",
+            "lowers cholesterol",
+            "boosts immunity",
+            "boosts your immunity",
+            "detoxifies",
+            "detoxifying",
+            "cleanses your gut",
+            "heals your gut",
+            "repairs metabolism",
+        ]:
+            self.assertTrue(
+                self.scan(phrase, self.disease),
+                f"expected disease claim to flag {phrase!r}",
+            )
+
+    def test_risk_reduction_claims_flagged(self):
+        for phrase in [
+            "lowers risk of cancer",
+            "reduces the risk of heart disease",
+            "cuts your risk of stroke",
+        ]:
+            self.assertTrue(
+                self.scan(phrase, self.disease),
+                f"expected risk-reduction claim to flag {phrase!r}",
+            )
+
+    def test_descriptive_nutrient_language_does_not_flag(self):
+        # Per spec: descriptive language is fine; only treatment claims fire.
+        ok_phrases = [
+            "high in vitamin C and zinc, both associated with normal immune function",
+            "contains 12g of added sugar per serving",
+            "may cause sharper post-meal energy swings due to refined carbs",
+            "high in fiber for satiety",
+        ]
+        for phrase in ok_phrases:
+            self.assertFalse(
+                self.scan(phrase, self.disease),
+                f"disease patterns should NOT fire on {phrase!r}",
+            )
+
+    # ---- fear rhetoric (must fire → WARNING) ----
+    def test_fear_rhetoric_flagged(self):
+        for phrase in [
+            "this is toxic",
+            "fake food",
+            "garbage food",
+            "dangerous chemicals in this snack",
+            "endocrine-disrupting",
+            "endocrine disrupting",
+            "addictive poison",
+            "destroys your metabolism",
+            "wrecks your gut",
+            "ruins your hormones",
+        ]:
+            self.assertTrue(
+                self.scan(phrase, self.fear),
+                f"expected fear rhetoric to flag {phrase!r}",
+            )
+
+    # ---- bare absolutes (must fire → WARNING) ----
+    def test_bare_absolutes_flagged(self):
+        for phrase in [
+            "this is healthy",
+            "this is unhealthy",
+            "the healthiest choice",
+            "the healthiest option",
+            "everyone should avoid this",
+            "never eat seed oils",
+            "always eat protein first",
+        ]:
+            self.assertTrue(
+                self.scan(phrase, self.absolutes),
+                f"expected absolute to flag {phrase!r}",
+            )
+
+    def test_goal_context_framing_does_not_flag_absolutes(self):
+        # Goal-context phrasing is the preferred replacement — must not fire.
+        ok_phrases = [
+            "may fit goals focused on satiety",
+            "the better-aligned option for weight loss",
+            "less ideal for energy stability",
+            "this is a healthy snack for most readers",  # "a healthy" not "is healthy"
+            "depending on your goals, may be reasonable",
+        ]
+        for phrase in ok_phrases:
+            self.assertFalse(
+                self.scan(phrase, self.absolutes),
+                f"absolute patterns should NOT fire on {phrase!r}",
+            )
 
 
 if __name__ == "__main__":

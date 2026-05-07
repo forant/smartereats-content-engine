@@ -757,6 +757,28 @@ Hard rules:
 - Do NOT add any commentary before or after the post.
 - Every sentence must be specific to the provided food data or the reader’s practical decision. Avoid generic nutrition advice unless it is tied directly to a score, ingredient, macro, processing concern, or comparison from the JSON.
 
+LANGUAGE GUARDRAILS — apply across title, description, headings, and body. The auditor enforces these; violations either block deploy (level 1) or get flagged for review (levels 2-3):
+
+1. ZERO disease / treatment claims (BLOCKS DEPLOY). Banned constructions:
+   - Treatment verbs ("prevents", "treats", "cures", "heals", "reverses", "fights", "kills", "eliminates") applied to any disease — cancer, diabetes, heart disease, obesity, insulin resistance, metabolic syndrome, hypertension, inflammation, etc.
+   - "reduces / lowers / cuts risk of <disease>".
+   - Specific banned phrases: "lowers cholesterol", "boosts immunity", "detoxifies", "cleanses your gut", "heals your gut", "repairs metabolism".
+   Replace with descriptive nutrition language anchored in JSON facts.
+
+2. NO fear-based wellness rhetoric (FLAGGED): "toxic", "poison", "fake food", "garbage food", "dangerous chemicals", "endocrine-disrupting", "addictive poison", "destroys / wrecks / ruins your metabolism / gut / body / hormones".
+
+3. AVOID bare absolutes (FLAGGED) — replace with goal-context framing:
+   - "this is healthy" / "this is unhealthy" → "may fit goals focused on [satiety / lower calorie density / minimizing added sugar]"
+   - "the healthiest choice" → "the better-aligned option for [specific goal]" or describe what makes it better.
+   - "everyone should avoid" / "never eat" / "always eat" → drop the universal; describe the tradeoff in context.
+
+4. PREFERRED language — practical, descriptive, goal-aware:
+   - Mechanisms, not claims: "may cause sharper post-meal energy swings due to refined carbs" (✓), "boosts immunity" (✗).
+   - Quantified facts pulled from the JSON: "contains 12g of added sugar per serving" (✓).
+   - Goal hooks: "depending on your goals", "fits some eating patterns better than others", "may be a reasonable occasional choice".
+   - Nutrition vocabulary: calorie density, protein per calorie, fiber, sodium, satiety, processing, added sugar, energy stability, convenience.
+   - Descriptive nutrient discussion is fine: "high in vitamin C and zinc, both associated with normal immune function" (✓ descriptive) — but never "boosts immunity" (✗ clinical claim).
+
 Editorial stance — depends on the JSON's `format` field:
 
 - format == "comparison": food_a is ALWAYS the subject of the post. food_b is ONLY a baseline reference — a yardstick for exposing food_a. Do NOT recommend food_b. Do NOT describe food_b as "the better choice," do NOT suggest readers pick it instead, do NOT frame the post as "which should I choose?". The post answers ONE question: what does this reveal about food_a?
@@ -767,11 +789,12 @@ Forbidden closers in any format: "both are fine," "everything in moderation," "i
 
 Required structure:
 
-YAML frontmatter at the very top — exactly these three fields, no others (no category, no tags, no slug, no image, no draft):
+YAML frontmatter at the very top — these fields, in this order. No category, no tags, no slug, no image, no draft:
 ---
 title: "{the title is provided in the user message — use it verbatim, including the parenthetical comparison if present}"
 description: "{1-sentence SEO blurb, ≤160 chars, no quotes inside}"
 date: "{provided date YYYY-MM-DD}"
+topics: ["slug-1", "slug-2"]
 ---
 
 Description rules:
@@ -780,11 +803,27 @@ Description rules:
 - Slightly curiosity-driven — hint at a surprising or counterintuitive answer.
 - If food_b is present, hint at the comparison (e.g. "...this comparison with soda tells a different story").
 
+Topics rules:
+- Pick 1-3 slugs from the EXACT allowlist provided in the user message. Use the slugs verbatim, comma-separated inside square brackets — `topics: ["slug-a", "slug-b"]`.
+- Choose by macro role (protein bar / drink / frozen meal / cereal / snack), likely user goal (weight loss / satiety / convenience / energy), and retailer if relevant (Costco / Kirkland).
+- NEVER invent a slug — referencing a non-existent topic fails the website build.
+- If the user message did NOT provide a topics allowlist, OMIT the `topics:` line entirely.
+
+Anti-repetition rule (READ CAREFULLY — repetition is the most common failure mode):
+The frontmatter `description:`, the body's intro paragraph, and the `## Quick Answer` section play THREE distinct roles. They MUST NOT restate the same sentence structure or reasoning:
+- `description:`  → a concise thesis. One-line positioning, SEO/social-share friendly.
+- intro paragraph → context + tradeoffs. Frame why this matters, what's surprising, who is asking. Do NOT state the verdict here — that belongs to Quick Answer.
+- ## Quick Answer → compressed retrieval-friendly verdict. Stand-alone (an AI search engine should be able to surface JUST this section and have it make sense).
+
+Each section introduces NEW information or framing. Do not begin two of these three with the same sentence structure or near-identical phrasing. If you find yourself starting the intro with "Is/Are X healthy?" — stop, that's the description's job; rewrite the intro.
+
 Then, the body H1 — use the EXACT same title string as the frontmatter:
 # {title verbatim}
 
+A short intro paragraph (1-2 sentences). Sets up context and tradeoffs — why someone is asking, what's surprising, what's at stake. Do NOT state the verdict here. Do NOT echo the description's wording. For comparison: do not frame the intro as "which should I choose?" — frame it around food_a's halo, marketing, or hidden tradeoff.
+
 ## Quick Answer
-2-3 concise sentences. Directly answer whether food_a is healthy and how it compares to food_b. No intro paragraph, no fluff — start with the verdict.
+2-3 concise sentences — the actual verdict. Directly answer whether food_a is healthy and how it compares to food_b. Stand-alone: this section MUST make sense even when an AI search engine surfaces it in isolation, with no preceding context. Different sentence structure and wording from the description and the intro paragraph.
 
 ## Quick Verdict
 - {food_a_display_name}: X/10
@@ -833,6 +872,28 @@ Hard rules:
 - Do NOT wrap your output in fences (no ```markdown). Output raw markdown.
 - Do NOT add any commentary before or after the post.
 
+LANGUAGE GUARDRAILS — apply across title, description, headings, and body. The auditor enforces these; violations either block deploy (level 1) or get flagged for review (levels 2-3):
+
+1. ZERO disease / treatment claims (BLOCKS DEPLOY). Banned constructions:
+   - Treatment verbs ("prevents", "treats", "cures", "heals", "reverses", "fights", "kills", "eliminates") applied to any disease — cancer, diabetes, heart disease, obesity, insulin resistance, metabolic syndrome, hypertension, inflammation, etc.
+   - "reduces / lowers / cuts risk of <disease>".
+   - Specific banned phrases: "lowers cholesterol", "boosts immunity", "detoxifies", "cleanses your gut", "heals your gut", "repairs metabolism".
+   Replace with descriptive nutrition language anchored in JSON facts.
+
+2. NO fear-based wellness rhetoric (FLAGGED): "toxic", "poison", "fake food", "garbage food", "dangerous chemicals", "endocrine-disrupting", "addictive poison", "destroys / wrecks / ruins your metabolism / gut / body / hormones".
+
+3. AVOID bare absolutes (FLAGGED) — replace with goal-context framing:
+   - "this is healthy" / "this is unhealthy" → "may fit goals focused on [satiety / lower calorie density / minimizing added sugar]"
+   - "the healthiest choice" → "the better-aligned option for [specific goal]" or describe what makes it better.
+   - "everyone should avoid" / "never eat" / "always eat" → drop the universal; describe the tradeoff in context.
+
+4. PREFERRED language — practical, descriptive, goal-aware:
+   - Mechanisms, not claims: "may cause sharper post-meal energy swings due to refined carbs" (✓), "boosts immunity" (✗).
+   - Quantified facts pulled from the JSON: "contains 12g of added sugar per serving" (✓).
+   - Goal hooks: "depending on your goals", "fits some eating patterns better than others", "may be a reasonable occasional choice".
+   - Nutrition vocabulary: calorie density, protein per calorie, fiber, sodium, satiety, processing, added sugar, energy stability, convenience.
+   - Descriptive nutrient discussion is fine: "high in vitamin C and zinc, both associated with normal immune function" (✓ descriptive) — but never "boosts immunity" (✗ clinical claim).
+
 Editorial stance:
 - The post answers ONE query: "Is/Are {food} healthy?" — a question the reader is searching for.
 - Frame healthiness as goal-dependent, NOT absolute. Whether the food is healthy depends on the eater's goal, portion size, and what they're comparing it to.
@@ -849,12 +910,19 @@ Each major section must stand on its own — assume an AI search engine may surf
 
 Required structure:
 
-YAML frontmatter at the very top — exactly these three fields, no others:
+YAML frontmatter at the very top — these fields, in this order. No category, no tags, no slug, no image, no draft:
 ---
 title: "{the title is provided in the user message — use it verbatim, including the question mark}"
 description: "{1-sentence SEO blurb, ≤160 chars, no quotes inside}"
 date: "{provided date YYYY-MM-DD}"
+topics: ["slug-1", "slug-2"]
 ---
+
+Topics rules:
+- Pick 1-3 slugs from the EXACT allowlist provided in the user message. Use the slugs verbatim, comma-separated inside square brackets — `topics: ["slug-a", "slug-b"]`.
+- Choose by macro role (protein bar / drink / frozen meal / cereal / snack), likely user goal (weight loss / satiety / convenience / energy), and retailer if relevant (Costco / Kirkland).
+- NEVER invent a slug — referencing a non-existent topic fails the website build.
+- If the user message did NOT provide a topics allowlist, OMIT the `topics:` line entirely.
 
 Title grammar — Is vs. Are:
 The frontmatter `title:` and body H1 are provided in the user message and MUST be used verbatim — do not "correct" the verb. The title was constructed deterministically using these rules so it stays in sync with the URL slug and the rest of the post:
@@ -872,11 +940,21 @@ Description rules:
 - Slightly curiosity-driven, never a punt.
 - Example: "Is popcorn healthy? Learn when popcorn is a smart snack, when it can work against your goals, and how it compares to other common snacks."
 
+Anti-repetition rule (READ CAREFULLY — repetition is the most common failure mode):
+The frontmatter `description:`, the body's intro paragraph, and the `## Quick Answer` section play THREE distinct roles. They MUST NOT restate the same sentence structure or reasoning:
+- `description:`  → a concise thesis. One-line positioning, SEO/social-share friendly.
+- intro paragraph → context + tradeoffs. Frame why this matters, what's surprising, who is asking. Do NOT state the verdict here — that belongs to Quick Answer.
+- ## Quick Answer → compressed retrieval-friendly verdict. Stand-alone (an AI search engine should be able to surface JUST this section and have it make sense).
+
+Each section introduces NEW information or framing. Do not begin two of these three with the same sentence structure or near-identical phrasing. If you find yourself starting the intro with "Is/Are {food} healthy?" — stop, that's the description's job; rewrite the intro.
+
 Body H1 — verbatim title:
 # {title verbatim}
 
+A short intro paragraph (1-2 sentences). Sets up context and tradeoffs — why someone is asking, what marketing claims surround the food, who is the typical reader, what's the surprising tension. Do NOT state the verdict here. Do NOT echo the description's wording.
+
 ## Quick Answer
-2-3 sentences. Lead with a direct, natural-language answer using the food's name verbatim. Pattern: "{Food} can be a relatively healthy [snack/option] depending on…" or "{Food} is a mixed bag — fine for X, not for Y." No filler intro.
+2-3 sentences — the actual verdict. Lead with a direct, natural-language answer using the food's name verbatim. Pattern: "{Food} can be a relatively healthy [snack/option] depending on…" or "{Food} is a mixed bag — fine for X, not for Y." Stand-alone: this section MUST make sense even when an AI search engine surfaces it in isolation. Different sentence structure and wording from the description and the intro paragraph.
 
 ## Nutrition Snapshot
 A short paragraph (1-2 sentences) framing the food's profile, followed by a bullet list of headline numbers pulled VERBATIM from the JSON: calories per serving, protein g, fiber g, sugar g, sodium mg (only include what's present). Include the food's score as "Overall score: X/10". Do NOT invent numbers — if a value is missing from the JSON, omit that bullet.
@@ -1075,6 +1153,63 @@ def load_published_blog_index(website_blog_dir: Optional[str]) -> list[str]:
     return sorted(mdx.stem for mdx in p.glob("*.mdx"))
 
 
+def load_published_topics_index(website_topics_dir: Optional[str]) -> list[str]:
+    """Return sorted slugs of `.mdx` / `.md` files in WEBSITE_TOPICS_DIR.
+    Used as the allowlist for the `topics:` frontmatter field — a post
+    that references a non-existent topic slug fails the website build.
+
+    Returns [] silently when the env var is unset; staged posts are then
+    written without a `topics:` field at all (safe — the field is
+    optional). Prints a warning when the path is set but invalid."""
+    if not website_topics_dir:
+        return []
+    p = Path(website_topics_dir)
+    if not p.exists() or not p.is_dir():
+        print(f"WARNING: WEBSITE_TOPICS_DIR={website_topics_dir!r} is not a "
+              "directory; staged posts will be written without a topics: field.",
+              file=sys.stderr)
+        return []
+    out: set[str] = set()
+    for ext in ("*.mdx", "*.md"):
+        for f in p.glob(ext):
+            out.add(f.stem)
+    return sorted(out)
+
+
+# Match the frontmatter `topics:` line in either inline-array or
+# block-list YAML form. Captures everything between the colon and the
+# trailing newline so we can rewrite or drop it as one unit.
+_TOPICS_LINE_RE = re.compile(
+    r"(^|\n)topics:\s*\[(?P<inline>[^\]]*)\]\s*(?=\n|$)",
+)
+
+
+def _validate_topics_field(markdown: str, allowed: list[str]) -> tuple[str, list[str]]:
+    """Strip any `topics:` slug that isn't in `allowed`. Drops the whole
+    line when the resulting list is empty, since the website build would
+    fail on a referenced-but-missing topic. Returns (new_markdown,
+    dropped_slugs) so the caller can warn."""
+    allowed_set = set(allowed or [])
+    dropped: list[str] = []
+
+    def repl(match: re.Match) -> str:
+        raw = match.group("inline")
+        found = re.findall(r'["\']([^"\']+)["\']', raw)
+        kept = [s for s in found if s in allowed_set]
+        for s in found:
+            if s not in allowed_set:
+                dropped.append(s)
+        prefix = match.group(1)
+        if not kept:
+            # Drop the line entirely (and its leading newline if there was one).
+            return prefix if prefix == "" else ""
+        kept_str = ", ".join(f'"{s}"' for s in kept)
+        return f"{prefix}topics: [{kept_str}]"
+
+    new_markdown = _TOPICS_LINE_RE.sub(repl, markdown, count=1)
+    return new_markdown, dropped
+
+
 def _pick_related_slugs(
     published_slugs: list[str],
     current_slug: str,
@@ -1093,11 +1228,20 @@ def _pick_related_slugs(
     return [candidates[(start + i) % total] for i in range(min(n, total))]
 
 
-def generate_blog_post_with_openai(blog_input: dict, title: str, model: str) -> str:
+def generate_blog_post_with_openai(
+    blog_input: dict,
+    title: str,
+    model: str,
+    available_topics: Optional[list[str]] = None,
+) -> str:
     """Call the OpenAI chat-completions API to turn one structured blog
     input into a markdown post. Raises on API errors — the caller logs
     and continues. `title` is computed deterministically by the caller
     and must appear verbatim in both the frontmatter and the body H1.
+
+    `available_topics` is the allowlist for the `topics:` frontmatter
+    field. When [] / None, the model is told to omit the field entirely
+    (and a Python-side validator strips any topics line just in case).
 
     The system prompt is selected by the JSON's `format` field:
     'evaluation' → single-food 'Is X Healthy?' template; everything else
@@ -1117,13 +1261,37 @@ def generate_blog_post_with_openai(blog_input: dict, title: str, model: str) -> 
     )
 
     payload = {**blog_input, "date": today, "title": title}
-    user_msg = (
-        f"{intro}\n\n"
-        f"Use this exact title in BOTH the frontmatter `title:` and the body H1 `#`:\n"
-        f"  {title}\n\n"
-        "Use only the facts in the JSON below. Output markdown only.\n\n"
-        f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```"
-    )
+
+    msg_parts = [
+        intro,
+        "",
+        "Use this exact title in BOTH the frontmatter `title:` and the body H1 `#`:",
+        f"  {title}",
+        "",
+    ]
+    if available_topics:
+        msg_parts += [
+            "Pick 1-3 topic slugs from THIS exact allowlist for the "
+            "frontmatter `topics:` field (use slugs verbatim — never invent):",
+            "  " + ", ".join(available_topics),
+            "Choose by macro role (protein bar / drink / frozen meal / cereal / "
+            "snack), likely user goal (weight loss / satiety / convenience / "
+            "energy), and retailer if relevant. If none clearly fit, pick the "
+            "single best match.",
+            "",
+        ]
+    else:
+        msg_parts += [
+            "OMIT the `topics:` frontmatter field entirely — no allowlist "
+            "is configured for this run.",
+            "",
+        ]
+    msg_parts += [
+        "Use only the facts in the JSON below. Output markdown only.",
+        "",
+        f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```",
+    ]
+    user_msg = "\n".join(msg_parts)
 
     resp = client.chat.completions.create(
         model=model,
@@ -1141,6 +1309,7 @@ def write_blog_posts_from_inputs(
     blog_input_dir: str = "output/blog_inputs",
     output_dir: str = "output/blog_posts",
     force: bool = False,
+    published_only: bool = False,
 ) -> int:
     """For every JSON in `blog_input_dir`, call OpenAI and write a `.mdx`
     post into `output_dir`. Returns the count of successful writes.
@@ -1156,6 +1325,11 @@ def write_blog_posts_from_inputs(
     When `force=False` (default), an input whose `<slug>.mdx` already exists
     is skipped — re-runs don't re-spend OpenAI tokens on posts already
     generated.
+
+    When `published_only=True`, only posts whose slug exists in
+    `WEBSITE_BLOG_DIR` are regenerated. Combined with `force=True`, that's
+    "refresh only what's live on the site". Requires WEBSITE_BLOG_DIR to be
+    set; otherwise the run is a no-op with a clear warning.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -1210,6 +1384,37 @@ def write_blog_posts_from_inputs(
     # time. When WEBSITE_BLOG_DIR is unset/invalid, the list is empty and
     # the Related Comparisons section is skipped entirely.
     published_slugs = load_published_blog_index(os.environ.get("WEBSITE_BLOG_DIR"))
+    # Topic hub allowlist for the frontmatter `topics:` field. Empty when
+    # WEBSITE_TOPICS_DIR isn't configured — the prompt is told to omit the
+    # field, and the validator strips it if the model emits one anyway.
+    available_topics = load_published_topics_index(os.environ.get("WEBSITE_TOPICS_DIR"))
+
+    # `--published-only`: scope the run to slugs that are live on the
+    # website. Requires WEBSITE_BLOG_DIR.
+    if published_only:
+        if not published_slugs:
+            print(
+                "WARNING: --published-only requires WEBSITE_BLOG_DIR to be "
+                "set and to contain .mdx files. Nothing will be regenerated.",
+                file=sys.stderr,
+            )
+            return 0
+        live_set = set(published_slugs)
+        before = len(plan)
+        plan = [p for p in plan if p[2].stem in live_set]
+        skipped_unpublished = before - len(plan)
+        if skipped_unpublished:
+            print(
+                f"--published-only: skipping {skipped_unpublished} staged "
+                f"input(s) whose slug isn't in WEBSITE_BLOG_DIR; "
+                f"regenerating {len(plan)} live post(s)."
+            )
+        if not plan:
+            print(
+                "No published posts match the staged inputs. Either nothing "
+                "is live yet, or staged slugs differ from published slugs."
+            )
+            return 0
 
     # Phase 2: generate, skipping ones that already exist unless forced.
     written = 0
@@ -1220,7 +1425,9 @@ def write_blog_posts_from_inputs(
             continue
 
         try:
-            markdown = generate_blog_post_with_openai(blog_input, title, model)
+            markdown = generate_blog_post_with_openai(
+                blog_input, title, model, available_topics=available_topics,
+            )
         except Exception as e:
             print(f"  WARNING: OpenAI call failed for {json_path.name}: {e}",
                   file=sys.stderr)
@@ -1230,6 +1437,13 @@ def write_blog_posts_from_inputs(
             print(f"  WARNING: empty response for {json_path.name}; skipping.",
                   file=sys.stderr)
             continue
+
+        # Strip any topic slug the model emitted that isn't in the live
+        # allowlist — references to non-existent topics fail the build.
+        markdown, dropped_topics = _validate_topics_field(markdown, available_topics)
+        if dropped_topics:
+            print(f"  WARNING: dropped invalid topic slug(s) from "
+                  f"{out_path.name}: {dropped_topics}", file=sys.stderr)
 
         # Related Comparisons: pick up to 3 published slugs from
         # WEBSITE_BLOG_DIR (excluding the post we're generating) and emit a
@@ -1420,6 +1634,11 @@ def parse_args() -> argparse.Namespace:
                    help="skip PNG card rendering. Scoring and blog-post "
                         "generation still run normally — useful when you "
                         "only care about new .mdx files.")
+    p.add_argument("--published-only", action="store_true",
+                   help="only regenerate posts whose slug is already live "
+                        "in WEBSITE_BLOG_DIR. Combine with --blog-only "
+                        "--force to refresh just the live set without "
+                        "touching unpublished drafts.")
     return p.parse_args()
 
 
@@ -1432,7 +1651,9 @@ def main() -> int:
     if args.blog_only:
         try:
             write_blog_posts_from_inputs(
-                "output/blog_inputs", "output/blog_posts", force=args.force,
+                "output/blog_inputs", "output/blog_posts",
+                force=args.force,
+                published_only=args.published_only,
             )
         except Exception as e:
             print(f"WARNING: blog post generation failed: {e}", file=sys.stderr)
@@ -1769,7 +1990,11 @@ def main() -> int:
     # Generate markdown blog posts from the blog_inputs JSON via OpenAI.
     # No-ops when OPENAI_API_KEY is unset; never blocks card rendering.
     try:
-        write_blog_posts_from_inputs(blog_dir, "output/blog_posts", force=args.force)
+        write_blog_posts_from_inputs(
+            blog_dir, "output/blog_posts",
+            force=args.force,
+            published_only=args.published_only,
+        )
     except Exception as e:
         print(f"\nWARNING: blog post generation failed: {e}", file=sys.stderr)
 

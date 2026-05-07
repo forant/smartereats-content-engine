@@ -207,8 +207,9 @@ python main.py
 The system has these responsibilities, kept in separate scripts:
 
 ```
-discover_candidates.py   → discover and score promising comparisons
-discover_evaluations.py  → propose single-food "Is X Healthy?" posts
+discover_candidates.py   → discover and score promising comparisons (OFF-driven)
+discover_evaluations.py  → propose single-food "Is X Healthy?" posts (corpus-driven)
+discover_foods.py        → curate canonical food entities for content ideation
 input_builder.py         → review / clean / approve into input.csv
 main.py                  → score, render cards, write blog inputs + .mdx posts
 audit_blog_posts.py      → validate staged .mdx (sections, links, dupes)
@@ -324,6 +325,7 @@ Before copying `.mdx` files into the website, run the auditor:
 
 ```
 export WEBSITE_BLOG_DIR="/path/to/smartereats-website/content/blog"
+export WEBSITE_TOPICS_DIR="/path/to/smartereats-website/content/topics"
 ./venv/bin/python audit_blog_posts.py
 ```
 
@@ -331,6 +333,8 @@ It walks `output/blog_posts/` (or specific files) and reports:
 
 - frontmatter has all three required fields
 - frontmatter `title:` matches the body H1
+- frontmatter `topics:` only references slugs that exist in
+  `WEBSITE_TOPICS_DIR` (referencing a missing topic fails the website build)
 - required H2 sections per format (auto-detected by section presence)
 - `<RelatedPosts slugs="…"/>` only references slugs in `WEBSITE_BLOG_DIR`
 - inline `[text](/blog/slug)` links resolve in `WEBSITE_BLOG_DIR`
@@ -349,8 +353,138 @@ Exits non-zero if any error-level issue is found.
 
 Covers grammar / title / slug helpers, comparison-helper backward
 compatibility, food-name normalization + dedup, vague-name filtering,
-candidate extraction from a synthetic input.csv, and Related-section
-slug safety.
+candidate extraction from a synthetic input.csv, Related-section slug
+safety, and the full food discovery pipeline (canonicalization,
+relevance scoring, hub assignment, CSV round-trip, seed adapter,
+end-to-end orchestration).
+
+## Food candidate discovery (V1)
+
+Sits a layer above comparison/evaluation discovery — produces a curated
+catalog of **canonical food entities** (e.g. "Quest Bars", "Fairlife Core
+Power Shakes", "Lean Cuisine Frozen Meals") that downstream blog
+generators can ideate against. Scores them for **content relevance**, NOT
+nutrition — nutrition lives in the foodscore backend.
+
+```
+sources (config/discovery_seeds.json + retailer adapters)
+   → raw candidates
+   → normalize (canonical name + brand)
+   → dedupe (collapse flavor/size variants by dedup_key)
+   → relevance scoring (0-100 + explainable reasons)
+   → hub assignment (1+ slugs from V1 hub list)
+   → output CSVs in output/discovery/
+   → Streamlit review (Mode → Food Discovery)
+   → approved CSV feeds main.py / discover_evaluations.py
+```
+
+### Run discovery
+
+```
+# Default: seed adapter, every category in the seed file.
+./venv/bin/python discover_foods.py
+
+# One category, one source.
+./venv/bin/python discover_foods.py --source seed --category protein-bars
+
+# Multi-source — seed plus best-effort Target scrape.
+./venv/bin/python discover_foods.py --source seed --source target --category all
+
+# Dry-run (no files written, prints the slate).
+./venv/bin/python discover_foods.py --dry-run --top 30
+
+# Constrain hub assignment to live website topics.
+WEBSITE_TOPICS_DIR=/path/to/site/content/topics \
+    ./venv/bin/python discover_foods.py
+```
+
+### Sources
+
+- **`seed`** — `config/discovery_seeds.json`, a curated list of
+  `{brand, category, retailer}` rows. Always works, no network. The
+  primary V1 ideation source. Grow it by editing the JSON file.
+- **`target`** — best-effort static-HTML scrape of Target category pages.
+  Returns [] gracefully when Target's anti-bot is active. Documented as
+  fragile in `discovery/retailers/target.py`.
+- **`walmart`** — stub. Walmart's category pages are aggressively
+  defended; bypassing that violates the project's "no anti-bot" rule.
+  Use the `seed` source with `"retailer": "walmart"` for Walmart-shelf
+  brands until a partnership API is wired in.
+
+To add a new retailer: subclass `discovery.retailers.base.Retailer`,
+implement `fetch(category, limit)`, register in
+`discovery.pipeline.ALL_ADAPTERS`. Adapters MUST fail gracefully — never
+raise — and respect User-Agent / rate-limit defaults.
+
+### Topic hubs (V1)
+
+Hub assignment maps category + retailer signals onto the website's
+`/content/topics/` slugs. Initial hubs:
+
+```
+high-protein-snacks · weight-loss-snacks · healthy-costco-foods
+protein-bars · healthy-frozen-meals · healthy-drinks
+healthy-convenience-foods
+```
+
+Edit `discovery/hubs.py` to add categories or hubs. When
+`WEBSITE_TOPICS_DIR` is set, hub assignment is intersected with the live
+slug set so we never assign a hub that doesn't exist.
+
+### Streamlit review
+
+```
+./venv/bin/streamlit run input_builder.py
+# Sidebar → Food Discovery
+```
+
+The Food Discovery mode shows the normalized candidates with editable
+fields:
+
+- `approval_status` — pending / approved / rejected (dropdown)
+- `canonical_name`, `brand`, `category`
+- `assigned_hubs` — `|`-separated list, hand-editable
+- `rejection_reason`, `notes`
+
+Use the filter panel to narrow by min relevance score, hub, or status.
+Hit **Save edits** to commit; rows split into:
+
+```
+output/discovery/approved_candidates.csv   # feeds downstream generators
+output/discovery/rejected_candidates.csv   # audit trail
+output/discovery/normalized_candidates.csv # working set, edits persist
+output/discovery/content_opportunities.csv # one row per (entity × post type)
+output/discovery/discovery_snapshot.json   # full JSON snapshot for diffing
+```
+
+There's also a **Run discovery** expander at the top of the page that
+calls the same orchestrator the CLI uses — useful for kicking off a
+fresh batch without leaving Streamlit.
+
+### Content relevance vs. nutrition
+
+This module **does not score nutrition**. It scores whether an entity is
+a worthwhile content target — brand recognizability, category fit,
+retailer prominence, multi-source signal, obscure-SKU penalties. Reasons
+are surfaced verbatim in the `score_reasons` column so reviewers can
+sanity-check.
+
+Nutrition scoring happens later, in the foodscore backend, when an
+approved entity gets evaluated as part of `main.py`. The two scores are
+intentionally separate.
+
+### Limitations + next steps
+
+- The Target adapter is best-effort — production-grade scraping needs
+  rotating User-Agents / residential proxies / a partnership API. Out
+  of scope for V1; the abstraction is in place for whoever picks it up.
+- The seed file is the practical V1 ideation source. Growing it from
+  ~70 starter entries to ~300 is the cheapest path to a useful catalog.
+- Flavor-compound exclusion in normalization (e.g. "Cookies & Cream"
+  not getting picked as the head noun) is rule-based — extending
+  `_FLAVOR_COMPOUNDS` in `discovery/normalize.py` is cheap.
+- No image fetching yet — `image_url` flows through if the source
+  provides it, but we don't crawl product pages for images.
 
 ## Output
 
@@ -426,9 +560,12 @@ the website's `content/blog/`.
 
 Each post:
 
-- starts with YAML frontmatter — exactly three fields: `title`,
-  `description`, `date` (no `category`, `tags`, `slug`, `image`, or
-  `draft`)
+- starts with YAML frontmatter — `title`, `description`, `date`, and
+  optionally `topics` (no `category`, `tags`, `slug`, `image`, or `draft`)
+- when `WEBSITE_TOPICS_DIR` is set, includes 1-3 topic-hub slugs in the
+  `topics:` array picked from the live `content/topics/` directory; the
+  Python validator strips any slug the model emits that isn't in the
+  allowlist, so referenced topics always resolve at build time
 - uses an SEO title of the form `Is {Food A} Healthy?` (with an optional
   `(Food A vs Food B)` parenthetical for comparison/swap), repeated as
   `# title` in the body

@@ -943,11 +943,13 @@ st.caption(f"DB: `{_db_path()}` · CSV: `{INPUT_CSV}`")
 with st.sidebar:
     mode = st.radio(
         "Mode",
-        ["Manual Search", "Cleaner Mode"],
+        ["Manual Search", "Cleaner Mode", "Food Discovery"],
         index=0,
         help=(
-            "Manual: search OFF and build rows by hand. "
-            "Cleaner: review pending rows from output/discovery_results.csv."
+            "Manual: search OFF and build rows by hand.\n"
+            "Cleaner: review pending rows from output/discovery_results.csv.\n"
+            "Food Discovery: review canonical food entities from "
+            "output/discovery/ (the seed/retailer pipeline)."
         ),
     )
     st.divider()
@@ -973,8 +975,11 @@ if conn is None and mode == "Manual Search":
 
 if mode == "Manual Search":
     render_manual_mode(conn, fetch_meta=fetch_meta, result_limit=result_limit)
-else:
+elif mode == "Cleaner Mode":
     render_cleaner_mode()
+else:
+    from food_discovery_ui import render_food_discovery_mode
+    render_food_discovery_mode()
 
 st.divider()
 

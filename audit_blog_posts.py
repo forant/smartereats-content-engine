@@ -69,6 +69,96 @@ FORBIDDEN_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+# ---------------------------------------------------------------------------
+# Language guardrails (per the SmarterEats editorial spec).
+#
+# Three severity tiers:
+#   1. Disease / treatment claims — ERROR (blocks deploy).
+#   2. Fear-based wellness rhetoric — WARNING.
+#   3. Bare absolutes — WARNING.
+# ---------------------------------------------------------------------------
+
+# Disease nouns that anchor the treatment-verb pattern. Spaces in entries
+# match optional whitespace in the source ("heart\\s*disease").
+_DISEASE_NOUNS_RE = (
+    r"cancer|diabetes|heart\s*disease|obesity|insulin\s+resistance|"
+    r"metabolic\s+syndrome|hypertension|inflammation|stroke|"
+    r"high\s+blood\s+pressure"
+)
+
+# 1. Disease / treatment claims — ERROR.
+DISEASE_CLAIM_PATTERNS: tuple[re.Pattern, ...] = (
+    # Treatment verbs + disease nouns (with up to two filler tokens between).
+    re.compile(
+        r"\b(?:prevents?|treats?|cures?|heals?|reverses?|fights?|kills?|eliminates?)"
+        r"(?:\s+\w+){0,3}\s+(?:" + _DISEASE_NOUNS_RE + r")\b",
+        re.IGNORECASE,
+    ),
+    # Risk-reduction claims.
+    re.compile(
+        r"\b(?:reduces?|lowers?|cuts?)\s+(?:the\s+|your\s+)?risk\s+of\s+"
+        r"(?:" + _DISEASE_NOUNS_RE + r")",
+        re.IGNORECASE,
+    ),
+    # Specific banned phrases.
+    re.compile(r"\blowers?\s+cholesterol\b", re.IGNORECASE),
+    re.compile(r"\b(?:boosts?|builds?)\s+(?:your\s+)?immunity\b", re.IGNORECASE),
+    re.compile(r"\bdetoxif(?:y|ies|ying|ied)\b", re.IGNORECASE),
+    re.compile(
+        r"\bcleanses?(?:\s+(?:your\s+)?(?:gut|body|colon|liver|system))",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bheals?\s+(?:your\s+)?gut\b", re.IGNORECASE),
+    re.compile(r"\brepairs?\s+(?:your\s+)?metabolism\b", re.IGNORECASE),
+)
+
+# 2. Fear-based wellness rhetoric — WARNING.
+FEAR_RHETORIC_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(r"\btoxic\b", re.IGNORECASE),
+    re.compile(r"\bpoison(?:ous)?\b", re.IGNORECASE),
+    re.compile(r"\bfake\s+food\b", re.IGNORECASE),
+    re.compile(r"\bgarbage\s+food\b", re.IGNORECASE),
+    re.compile(r"\bdangerous\s+chemicals?\b", re.IGNORECASE),
+    re.compile(r"\bendocrine[\s-]+disrupting\b", re.IGNORECASE),
+    re.compile(r"\baddictive\s+poison\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:destroys?|wrecks?|ruins?)\s+your\s+"
+        r"(?:metabolism|gut|body|hormones|health)\b",
+        re.IGNORECASE,
+    ),
+)
+
+# 3. Bare absolutes — WARNING. Tuned to avoid false positives on
+# "this is a healthy snack" (ok) vs "this is healthy"/"this is unhealthy"
+# (universal claim).
+ABSOLUTE_LANGUAGE_PATTERNS: tuple[re.Pattern, ...] = (
+    re.compile(
+        r"\bthis\s+(?:food|product|snack|drink)?\s*is\s+(?:un)?healthy\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bthe\s+healthiest\s+(?:choice|option|pick)\b", re.IGNORECASE),
+    re.compile(r"\beveryone\s+should\s+(?:avoid|skip)\b", re.IGNORECASE),
+    re.compile(r"\bnever\s+eat\b", re.IGNORECASE),
+    re.compile(r"\balways\s+eat\b", re.IGNORECASE),
+)
+
+
+def _scan_patterns(
+    text: str, patterns: tuple[re.Pattern, ...],
+) -> list[str]:
+    """Return the matched substrings (lowercased, deduped, in source order)
+    for any pattern that fires. Empty when none match."""
+    seen: list[str] = []
+    seen_set: set[str] = set()
+    for pat in patterns:
+        for m in pat.finditer(text):
+            hit = m.group(0).strip().lower()
+            if hit not in seen_set:
+                seen_set.add(hit)
+                seen.append(hit)
+    return seen
+
 # Capture both the bullet-style and JSX-style related blocks so audits keep
 # working through the format change.
 JSX_RELATED_RE = re.compile(
@@ -145,7 +235,26 @@ def _published_slugs(website_blog_dir: Optional[str]) -> set[str]:
     return {mdx.stem for mdx in p.glob("*.mdx")}
 
 
-def audit_post(path: Path, published: set[str]) -> tuple[list[str], list[str]]:
+def _published_topic_slugs(website_topics_dir: Optional[str]) -> set[str]:
+    """Slugs available for the frontmatter `topics:` field. Mirrors
+    main.load_published_topics_index but returns a set."""
+    if not website_topics_dir:
+        return set()
+    p = Path(website_topics_dir)
+    if not p.exists() or not p.is_dir():
+        return set()
+    out: set[str] = set()
+    for ext in ("*.mdx", "*.md"):
+        for f in p.glob(ext):
+            out.add(f.stem)
+    return out
+
+
+def audit_post(
+    path: Path,
+    published: set[str],
+    available_topics: Optional[set[str]] = None,
+) -> tuple[list[str], list[str]]:
     """Return (errors, warnings) for one post. Errors block publishing;
     warnings are advisory."""
     errors: list[str] = []
@@ -164,7 +273,27 @@ def audit_post(path: Path, published: set[str]) -> tuple[list[str], list[str]]:
         if not (fm.get(required) or "").strip():
             errors.append(f"frontmatter missing `{required}`")
     if "category" in fm or "tags" in fm:
-        warnings.append("frontmatter contains fields beyond title/description/date")
+        warnings.append("frontmatter contains fields beyond title/description/date/topics")
+
+    # Topics check — every slug listed must exist in the website's
+    # /content/topics/ directory; missing slugs fail the build.
+    raw_topics = fm.get("topics", "")
+    if raw_topics:
+        topic_slugs = re.findall(r'["\']([^"\']+)["\']', raw_topics)
+        if available_topics is None:
+            warnings.append(
+                f"topics: {topic_slugs} present but WEBSITE_TOPICS_DIR isn't "
+                "set, so resolution can't be verified"
+            )
+        else:
+            for s in topic_slugs:
+                if s not in available_topics:
+                    errors.append(
+                        f"topics: references unknown slug {s!r} "
+                        "(would fail website build)"
+                    )
+            if not topic_slugs:
+                warnings.append("frontmatter `topics:` is present but empty")
 
     title = fm.get("title", "")
     h1 = _h1(text)
@@ -196,6 +325,15 @@ def audit_post(path: Path, published: set[str]) -> tuple[list[str], list[str]]:
     for m in FORBIDDEN_RE.finditer(text):
         warnings.append(f"forbidden phrase {m.group(0)!r} at offset {m.start()}")
 
+    # Language guardrails — disease/treatment claims block deploy; fear
+    # rhetoric and bare absolutes are flagged for review.
+    for hit in _scan_patterns(text, DISEASE_CLAIM_PATTERNS):
+        errors.append(f"disease/treatment claim: {hit!r} (BLOCKS DEPLOY)")
+    for hit in _scan_patterns(text, FEAR_RHETORIC_PATTERNS):
+        warnings.append(f"fear-based rhetoric: {hit!r}")
+    for hit in _scan_patterns(text, ABSOLUTE_LANGUAGE_PATTERNS):
+        warnings.append(f"bare absolute: {hit!r} — replace with goal-context framing")
+
     # JSX <RelatedPosts /> slug references must all be published.
     for m in JSX_RELATED_RE.finditer(text):
         slugs = [s.strip() for s in m.group(1).split(",") if s.strip()]
@@ -220,11 +358,21 @@ def audit_post(path: Path, published: set[str]) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
-def audit_directory(paths: list[Path], website_blog_dir: Optional[str]) -> int:
+def audit_directory(
+    paths: list[Path],
+    website_blog_dir: Optional[str],
+    website_topics_dir: Optional[str] = None,
+) -> int:
     published = _published_slugs(website_blog_dir)
     if website_blog_dir and not published:
         print(f"WARNING: WEBSITE_BLOG_DIR={website_blog_dir!r} resolved to no "
               ".mdx files; link-resolution checks will skip.", file=sys.stderr)
+    available_topics: Optional[set[str]] = None
+    if website_topics_dir:
+        available_topics = _published_topic_slugs(website_topics_dir)
+        if not available_topics:
+            print(f"WARNING: WEBSITE_TOPICS_DIR={website_topics_dir!r} resolved "
+                  "to no topic files; topic checks will skip.", file=sys.stderr)
 
     seen_slugs: dict[str, Path] = {}
     seen_topics: dict[str, Path] = {}
@@ -233,7 +381,7 @@ def audit_directory(paths: list[Path], website_blog_dir: Optional[str]) -> int:
 
     for path in paths:
         slug = path.stem
-        errors, warnings = audit_post(path, published)
+        errors, warnings = audit_post(path, published, available_topics)
 
         # Cross-post checks.
         if slug in seen_slugs:
@@ -291,7 +439,11 @@ def main() -> int:
     if not paths:
         print(f"No .mdx files found.")
         return 0
-    return audit_directory(paths, os.environ.get("WEBSITE_BLOG_DIR"))
+    return audit_directory(
+        paths,
+        os.environ.get("WEBSITE_BLOG_DIR"),
+        os.environ.get("WEBSITE_TOPICS_DIR"),
+    )
 
 
 if __name__ == "__main__":
